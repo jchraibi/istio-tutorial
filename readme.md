@@ -1,3 +1,36 @@
+Genèse (JCH)
+
+Istio (JCH)
+Installation (LBR)
+
+Workshop
+1 - Injection de proxy (JCH)
+Introduction
+Hands-on
+
+2 - Monitoring (LBR)
+
+3 - Tracing distribué (LBR)
+
+4 - Route rules 101 (JCH)
+
+5 - Smart Routing (JCH + LBR)
+
+
+6 - SLA & Error handling (LBR + JCH)
+
+
+7 - Circuit Breaker (LBR)
+
+
+8 - Ultimate resilience (JCH)
+
+9 - Security (LBR)
+
+
+
+
+
 # Java (Spring Boot and Vert.x) + Istio on Kubernetes/OpenShift
 
 There are three different and super simple microservices in this system and they are chained together in the following sequence:
