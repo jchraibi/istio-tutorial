@@ -23,12 +23,34 @@ oc project istio-system
 oc expose svc istio-ingress
 ```
 
-Workshop
-1 - Injection de proxy (JCH)
-Introduction
-Hands-on
+Wait for Istio's components to be ready
 
-## 2 - Monitoring
+```bash
+oc get pods
+NAME                             READY     STATUS    RESTARTS   AGE
+istio-ca-1363003450-tfnjp        1/1       Running   0          4m
+istio-ingress-1005666339-vrjln   1/1       Running   0          4m
+istio-mixer-465004155-zn78n      3/3       Running   0          5m
+istio-pilot-1861292947-25hnm     2/2       Running   0          4m
+```
+
+And if you need quick access to the OpenShift console
+
+```bash
+minishift console
+```
+
+Note: on your first launch of the OpenShift console via minishift, you will like receive a warning with
+"Your connection is not private", it depends on your browser type and settings.  Simply select "Proceed to 192.168.99.100 (unsafe)" to bypass the warning.
+
+For minishift, with the admin-user addon, the user is "admin" and the password is "admin"
+
+## Workshop
+
+### 1 - Deployment and proxy injection
+
+
+### 2 - Monitoring
 
 From `$ISTIO_HOME`:
 
@@ -47,13 +69,15 @@ Send a bunch of request to the customer service:
 for i in {1..100}; do curl "customer-tutorial.$(minishift ip).nip.io"; done
 ```
 
-### Istio dashboard
+#### Istio dashboard
 
-### Mixer dashboard
+#### Mixer dashboard
 
 Internal metrics on everything running into `istio-system` project.
 
-### Custom metrics
+#### Custom metrics
+
+Istio also allows you to specify custom metrics which can be seen inside of the Prometheus dashboard
 
 From the `istio-tutorial` directoy:
 
@@ -67,8 +91,7 @@ Send a bunch of request and check next request within Prometheus:
 round(increase(istio_recommendation_request_count{destination="recommendation.tutorial.svc.cluster.local" }[60m]))
 ```
 
-
-### Custom log entries
+#### Custom log entries
 
 From the `istio-tutorial` directoy:
 
@@ -85,14 +108,14 @@ Send a bunch of requests and connect to Mixer logs to filter new `recommendation
 {"level":"warn","time":"2018-03-12T12:15:37.218825Z","instance":"recommendationentry.logentry.istio-system","destination":"recommendation","latency":"1.503ms","responseCode":200,"responseSize":48,"source":"preference","user":"unknown"}
 ```
 
-Cleanup
+Clean up
 
 ```bash
 istioctl delete -f istiofiles/recommendation_requestcount.yml -n istio-system
 istioctl delete -f istiofiles/recommendation_entry.yml -n istio-system
 ```
 
-## 3 - Distributed tracing
+### 3 - Distributed tracing
 
 Being already logged on `istio-system` project:
 
@@ -100,11 +123,11 @@ Being already logged on `istio-system` project:
 oc process -f https://raw.githubusercontent.com/jaegertracing/jaeger-openshift/master/all-in-one/jaeger-all-in-one-template.yml | oc create -f -
 ```
 
-### Explore Jaeger
+#### Explore Jaeger
 
 ![alt text](readme_images/jaegerUI.png "Jaeger with Customer")
 
-### Impacts on source code
+#### Impacts on source code
 
 Tracing requires a bit of work on the Java side. Each microservice needs to pass on the headers which are used to enable the traces.
 
@@ -115,19 +138,201 @@ and
 https://github.com/jchraibi/istio-tutorial/blob/master/customer/src/main/java/com/redhat/developer/demos/customer/CustomerApplication.java#L21-L31
 
 
-4 - Route rules 101 (JCH)
+### 4 - Route rules 101 (JCH)
 
-5 - Smart Routing (JCH + LBR)
+### 5 - Smart Routing (JCH + LBR)
 
-6 - SLA & Error handling (LBR + JCH)
+### 6 - SLA & Error handling
 
-7 - Circuit Breaker (LBR)
+#### Chaos engineering
 
-8 - Ultimate resilience (JCH)
+Apply some chaos engineering by throwing in some HTTP errors or network delays. Understanding failure scenarios is a critical aspect of microservices architecture (aka distributed computing)
 
-9 - Security (LBR)
+##### Fault injection
 
+By default, recommendation v1 and v2 are being randomly load-balanced as that is the default behavior in Kubernetes/OpenShift
 
+You can inject 503's, for approximately 50% of the requests.
+
+From the `istio-tutorial` directory:
+
+```bash
+istioctl create -f istiofiles/route-rule-recommendation-503.yml -n tutorial
+```
+
+with the following result:
+
+```bash
+customer => preference => recommendation v1 from '2793872006-rq7fs': 1271
+customer => 503 preference => 503 fault filter abort
+customer => preference => recommendation v2 from '3406724218-kdftb': 11
+```
+
+You can visualize some error spans into Jaeger and the effect on metrics on the Graphana Istio Dashboard.
+
+Clean up
+
+```bash
+istioctl delete routerule recommendation-503 -n tutorial
+```
+
+#### Delay injection
+
+The most insidious of possible distributed computing faults is not a "down" service but a service that is responding slowly, potentially causing a cascading failure in your network of services.
+
+```bash
+istioctl create -f istiofiles/route-rule-recommendation-delay.yml -n tutorial
+```
+
+And hit the customer endpoint many times.
+
+You will notice many requests to the customer endpoint now have a delay.
+If you are monitoring the logs for recommendation v1 and v2, you will also see the delay happens BEFORE the recommendation service is actually called
+
+As an exercise, change the `recommendation-delay` route rule configuration on the fly, lowering percent of requests and delay injected.
+
+Clean up
+
+```
+istioctl delete routerule recommendation-delay -n tutorial
+```
+
+### Remediation
+
+#### Retry
+
+Instead of failing immediately, retry the Service N more times
+
+We will use Istio and return 503's about 50% of the time. Send all users to v2 which will throw out some 503's
+
+```bash
+istioctl create -f istiofiles/route-rule-recommendation-v2_503.yml -n tutorial
+```
+
+Now, if you hit the customer endpoint several times, you should see some 503's
+
+```bash
+customer => preference => recommendation v2 from '3406724218-kdftb': 458
+customer => 503 preference => 503 fault filter abort
+customer => 503 preference => 503 fault filter abort
+customer => 503 preference => 503 fault filter abort
+customer => 503 preference => 503 fault filter abort
+customer => preference => recommendation v2 from '3406724218-kdftb': 459
+customer => 503 preference => 503 fault filter abort
+customer => 503 preference => 503 fault filter abort
+customer => preference => recommendation v2 from '3406724218-kdftb': 460
+```
+
+Now add the retry rule
+
+```bash
+istioctl create -f istiofiles/route-rule-recommendation-v2_retry.yml -n tutorial
+```
+
+and after a few seconds, things will settle down and you will see it work every time
+
+```bash
+customer => preference => recommendation v2 from '3406724218-kdftb': 641
+customer => preference => recommendation v2 from '3406724218-kdftb': 642
+customer => preference => recommendation v2 from '3406724218-kdftb': 643
+customer => preference => recommendation v2 from '3406724218-kdftb': 644
+customer => preference => recommendation v2 from '3406724218-kdftb': 645
+customer => preference => recommendation v2 from '3406724218-kdftb': 646
+customer => preference => recommendation v2 from '3406724218-kdftb': 647
+customer => preference => recommendation v2 from '3406724218-kdftb': 648
+```
+
+You can see the active RouteRules via:
+
+```bash
+$ istioctl get routerules -n tutorial
+NAME			KIND					NAMESPACE
+recommendation-v2-503	RouteRule.v1alpha2.config.istio.io	tutorial
+recommendation-v2-retry	RouteRule.v1alpha2.config.istio.io	tutorial
+```
+
+or via:
+
+```bash
+$ oc get routerules -n tutorial
+NAME                      AGE
+recommendation-v2-503     41m
+recommendation-v2-retry   41m
+```
+
+Delete route `recommendation-v2-retry`, check the previously avoided behaviour. Then remove `recommandation-v2-503` rule and fall-back to default:50/50 load-balancing between v1 and v2.
+
+#### Timeout
+
+Wait only N seconds before giving up and failing.  At this point, no other route rules should be in effect.  `oc get routerules` and `oc delete routerule <rulename>` if there are some.
+
+First, introduce some wait time in `recommendation v2` by uncommenting the line that calls the `timeout()` method. Update `RecommendationVerticle.java` making it a slow performer with a 3 second delay.
+
+```java
+    @Override
+    public void start() throws Exception {
+        Router router = Router.router(vertx);
+        router.get("/").handler(this::logging);
+        router.get("/").handler(this::timeout);
+        router.get("/").handler(this::getRecommendations);
+        router.get("/misbehave").handler(this::misbehave);
+        router.get("/behave").handler(this::behave);
+
+        HealthCheckHandler hc = HealthCheckHandler.create(vertx);
+        hc.register("dummy-health-check", future -> future.complete(Status.OK()));
+        router.get("/health").handler(hc);
+
+        vertx.createHttpServer().requestHandler(router::accept).listen(8080);
+    }
+```
+
+Rebuild and redeploy.
+
+### 7 - Circuit Breaker (LBR)
+
+### 8 - Ultimate resilience (JCH)
+
+### 9 - Security (LBR)
+
+#### Access Control
+
+##### Whitelist
+
+We'll create a whitelist on the preference service to only allow requests from the recommendation service, which will make the preference service invisible to the customer service. Requests from the customer service to the preference service will return a 404 Not Found HTTP error code.
+
+```bash
+istioctl create -f istiofiles/acl-whitelist.yml -n tutorial
+```
+
+```bash
+curl customer-tutorial.$(minishift ip).nip.io
+customer => 404 NOT_FOUND:preferencewhitelist.listchecker.tutorial:customer is not whitelisted
+```
+
+Clean up
+
+```bash
+istioctl delete -f istiofiles/acl-whitelist.yml -n tutorial
+```
+
+##### Blacklist
+
+We'll create a blacklist making the customer service blacklist to the preference service. Requests from the customer service to the preference service will return a 403 Forbidden HTTP error code.
+
+```bash
+istioctl create -f istiofiles/acl-blacklist.yml -n tutorial
+```
+
+```bash
+curl customer-tutorial.$(minishift ip).nip.io
+customer => 403 PERMISSION_DENIED:denycustomerhandler.denier.tutorial:Not allowed
+```
+
+Clean up
+
+```bash
+istioctl delete -f istiofiles/acl-blacklist.yml -n tutorial
+```
 
 
 
@@ -249,57 +454,9 @@ oc login $(minishift ip):8443 -u admin -p admin
 
 Note: In this tutorial, you will often be polling the customer endpoint with curl, while simultaneously viewing logs via stern or kubetail.sh and issuing commands via oc and istioctl.  Consider using three terminal windows.
 
-## Istio installation script
 
-```bash
-#!/bin/bash
-curl -L https://github.com/istio/istio/releases/download/0.6.0/istio-0.6.0-osx.tar.gz | tar xz
-cd istio-0.6.0
-```
 
-```bash
-oc login $(minishift ip):8443 -u admin -p admin
-oc adm policy add-scc-to-user anyuid -z istio-ingress-service-account -n istio-system
-oc adm policy add-scc-to-user anyuid -z default -n istio-system
-oc adm policy add-scc-to-user anyuid -z grafana -n istio-system
-oc adm policy add-scc-to-user anyuid -z prometheus -n istio-system
-oc create -f install/kubernetes/istio.yaml
-oc project istio-system
-oc expose svc istio-ingress
-oc apply -f install/kubernetes/addons/prometheus.yaml
-oc apply -f install/kubernetes/addons/grafana.yaml
-oc apply -f install/kubernetes/addons/servicegraph.yaml
-oc expose svc servicegraph
-oc expose svc grafana
-oc expose svc prometheus
-oc process -f https://raw.githubusercontent.com/jaegertracing/jaeger-openshift/master/all-in-one/jaeger-all-in-one-template.yml | oc create -f -
-```
 
-Wait for Istio's components to be ready
-
-```bash
-oc get pods
-NAME                             READY     STATUS    RESTARTS   AGE
-grafana-3617079618-4qs2b         1/1       Running   0          4m
-istio-ca-1363003450-tfnjp        1/1       Running   0          4m
-istio-ingress-1005666339-vrjln   1/1       Running   0          4m
-istio-mixer-465004155-zn78n      3/3       Running   0          5m
-istio-pilot-1861292947-25hnm     2/2       Running   0          4m
-jaeger-210917857-2w24f           1/1       Running   0          4m
-prometheus-168775884-dr5dm       1/1       Running   0          4m
-servicegraph-1100735962-tdh78    1/1       Running   0          4m
-```
-
-And if you need quick access to the OpenShift console
-
-```bash
-minishift console
-```
-
-Note: on your first launch of the OpenShift console via minishift, you will like receive a warning with
-"Your connection is not private", it depends on your browser type and settings.  Simply select "Proceed to 192.168.99.100 (unsafe)" to bypass the warning.
-
-For minishift, with the admin-user addon, the user is "admin" and the password is "admin"
 
 ## Deploy customer
 
@@ -536,35 +693,7 @@ Scroll-down to see the stats for customer, preference and recommendation
 
 ![alt text](readme_images/grafana2.png "Customer Preferences")
 
-## Custom Metrics
 
-Istio also allows you to specify custom metrics which can be seen inside of the Prometheus dashboard
-
-```bash
-minishift openshift service prometheus --in-browser
-```
-
-Add the custom metric and rule.  First make sure you are in the "istio-tutorial" directory and then
-
-```bash
-istioctl create -f istiofiles/recommendation_requestcount.yml -n istio-system
-```
-
-In the Prometheus dashboard, add the following
-
-```bash
-round(increase(istio_recommendation_request_count{destination="recommendation.tutorial.svc.cluster.local" }[60m]))
-```
-
-and select Execute
-
-![alt text](readme_images/prometheus_custom_metric.png "Prometheus with custom metric")
-
-Then run several requests through the system
-
-```bash
-curl customer-tutorial.$(minishift ip).nip.io
-```
 
 Note: you may have to refresh the browser for the Prometheus graph to update. And you may wish to make the interval 5m (5 minutes) as seen in the screenshot above.
 
@@ -745,107 +874,7 @@ Clean up
 istioctl delete routerule recommendation-v1-v2 -n tutorial
 ```
 
-## Fault Injection
-
-Apply some chaos engineering by throwing in some HTTP errors or network delays.  Understanding failure scenarios is a critical aspect of microservices architecture  (aka distributed computing)
-
-### HTTP Error 503
-
-By default, recommendation v1 and v2 are being randomly load-balanced as that is the default behavior in Kubernetes/OpenShift
-
-```bash
-oc get pods -l app=recommendation -n tutorial
-NAME                                  READY     STATUS    RESTARTS   AGE
-recommendation-v1-3719512284-7mlzw   2/2       Running   6          18h
-recommendation-v2-2815683430-vn77w   2/2       Running   0          3h
-```
-
-You can inject 503's, for approximately 50% of the requests
-
-```bash
-istioctl create -f istiofiles/route-rule-recommendation-503.yml -n tutorial
-
-curl customer-tutorial.$(minishift ip).nip.io
-customer => preference => recommendation v1 from '99634814-sf4cl': 88
-curl customer-tutorial.$(minishift ip).nip.io
-customer => 503 preference => 503 fault filter abort
-curl customer-tutorial.$(minishift ip).nip.io
-customer => preference => recommendation v2 from '2819441432-qsp25': 51
-```
-
-Clean up
-
-```bash
-istioctl delete routerule recommendation-503 -n tutorial
-```
-
-### Delay
-
-The most insidious of possible distributed computing faults is not a "down" service but a service that is responding slowly, potentially causing a cascading failure in your network of services.
-
-```bash
-istioctl create -f istiofiles/route-rule-recommendation-delay.yml -n tutorial
-```
-
-And hit the customer endpoint
-
-```bash
-#!/bin/bash
-while true
-do
-time curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-```
-
-You will notice many requets to the customer endpoint now have a delay.
-If you are monitoring the logs for recommendation v1 and v2, you will also see the delay happens BEFORE the recommendation service is actually called
-
-```bash
-stern recommendation -n tutorial
-```
-or
-```bash
-./kubetail.sh recommendation -n tutorial
-```
-
-Clean up
-
-```
-istioctl delete routerule recommendation-delay -n tutorial
-```
-
-## Retry
-
-Instead of failing immediately, retry the Service N more times
-
-We will use Istio and return 503's about 50% of the time.  Send all users to v2 which will throw out some 503's
-
-```bash
-istioctl create -f istiofiles/route-rule-recommendation-v2_503.yml -n tutorial
-```
-
-Now, if you hit the customer endpoint several times, you should see some 503's
-
-```bash
-#!/bin/bash
-while true
-do
-curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-
-customer => preference => recommendation v2 from '2036617847-m9glz': 190
-customer => preference => recommendation v2 from '2036617847-m9glz': 191
-customer => preference => recommendation v2 from '2036617847-m9glz': 192
-customer => 503 preference => 503 fault filter abort
-customer => preference => recommendation v2 from '2036617847-m9glz': 193
-customer => 503 preference => 503 fault filter abort
-customer => preference => recommendation v2 from '2036617847-m9glz': 194
-customer => 503 preference => 503 fault filter abort
-customer => preference => recommendation v2 from '2036617847-m9glz': 195
-customer => 503 preference => 503 fault filter abort
-```
+#
 
 Now add the retry rule
 
@@ -915,29 +944,7 @@ customer => preference => recommendation v1 from '2039379827-h58vw': 130
 
 ## Timeout
 
-Wait only N seconds before giving up and failing.  At this point, no other route rules should be in effect.  `oc get routerules` and `oc delete routerule <rulename>` if there are some.
 
-First, introduce some wait time in `recommendation v2` by uncommenting the line that calls the `timeout()` method. Update `RecommendationVerticle.java` making it a slow performer with a 3 second delay.
-
-```java
-    @Override
-    public void start() throws Exception {
-        Router router = Router.router(vertx);
-        router.get("/").handler(this::logging);
-        router.get("/").handler(this::timeout);
-        router.get("/").handler(this::getRecommendations);
-        router.get("/misbehave").handler(this::misbehave);
-        router.get("/behave").handler(this::behave);
-
-        HealthCheckHandler hc = HealthCheckHandler.create(vertx);
-        hc.register("dummy-health-check", future -> future.complete(Status.OK()));
-        router.get("/health").handler(hc);
-
-        vertx.createHttpServer().requestHandler(router::accept).listen(8080);
-    }
-```
-
-Rebuild and redeploy
 
 ```bash
 cd recommendation
@@ -1106,45 +1113,7 @@ oc logs -f `oc get pods|grep recommendation-v2|awk '{ print $1 }'` -c recommenda
 istioctl delete routerule recommendation-mirror -n tutorial
 ```
 
-## Access Control
 
-#### Whitelist
-
-We'll create a whitelist on the preference service to only allow requests from the recommendation service, which will make the preference service invisible to the customer service. Requests from the customer service to the preference service will return a 404 Not Found HTTP error code.
-
-```bash
-istioctl create -f istiofiles/acl-whitelist.yml -n tutorial
-```
-
-```bash
-curl customer-tutorial.$(minishift ip).nip.io
-customer => 404 NOT_FOUND:preferencewhitelist.listchecker.tutorial:customer is not whitelisted
-```
-
-##### To reset the environment:
-
-```bash
-istioctl delete -f istiofiles/acl-whitelist.yml -n tutorial
-```
-
-#### Blacklist
-
-We'll create a blacklist making the customer service blacklist to the preference service. Requests from the customer service to the preference service will return a 403 Forbidden HTTP error code.
-
-```bash
-istioctl create -f istiofiles/acl-blacklist.yml -n tutorial
-```
-
-```bash
-curl customer-tutorial.$(minishift ip).nip.io
-customer => 403 PERMISSION_DENIED:denycustomerhandler.denier.tutorial:Not allowed
-```
-
-##### To reset the environment:
-
-```bash
-istioctl delete -f istiofiles/acl-blacklist.yml -n tutorial
-```
 
 ## Load Balancer
 
