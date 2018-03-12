@@ -1,27 +1,88 @@
 Genèse (JCH)
 
 Istio (JCH)
-Installation (LBR)
+
+### Installation
+
+```bash
+#!/bin/bash
+curl -L https://github.com/istio/istio/releases/download/0.5.0/istio-0.5.0-osx.tar.gz | tar xz
+cd istio-0.5.0
+export ISTIO_HOME=$(pwd)
+export PATH=$ISTIO_HOME/bin:$PATH
+```
+
+From `$ISTIO_HOME`:
+
+```bash
+oc login $(minishift ip):8443 -u admin -p admin
+oc adm policy add-scc-to-user anyuid -z istio-ingress-service-account -n istio-system
+oc adm policy add-scc-to-user anyuid -z default -n istio-system
+oc create -f install/kubernetes/istio.yaml
+oc project istio-system
+oc expose svc istio-ingress
+```
 
 Workshop
 1 - Injection de proxy (JCH)
 Introduction
 Hands-on
 
-2 - Monitoring (LBR)
+## 2 - Monitoring
 
-3 - Tracing distribué (LBR)
+From `$ISTIO_HOME`:
+
+```bash
+oc adm policy add-scc-to-user anyuid -z grafana -n istio-system
+oc adm policy add-scc-to-user anyuid -z prometheus -n istio-system
+oc apply -f install/kubernetes/addons/prometheus.yaml
+oc apply -f install/kubernetes/addons/grafana.yaml
+oc expose svc grafana
+oc expose svc prometheus
+```
+
+Send a bunch of request to the customer service:
+
+```bash
+for i in {1..100}; do curl "customer-tutorial.$(minishift ip).nip.io"; done
+```
+
+### Istio dashboard
+
+### Mixer dashboard
+
+Internal metrics on everything running into `istio-system` project.
+
+## 3 - Distributed tracing
+
+Being already logged on `istio-system` project:
+
+```bash
+oc process -f https://raw.githubusercontent.com/jaegertracing/jaeger-openshift/master/all-in-one/jaeger-all-in-one-template.yml | oc create -f -
+```
+
+### Explore Jaeger
+
+![alt text](readme_images/jaegerUI.png "Jaeger with Customer")
+
+### Impacts on source code
+
+Tracing requires a bit of work on the Java side. Each microservice needs to pass on the headers which are used to enable the traces.
+
+https://github.com/jchraibi/istio-tutorial/blob/master/customer/src/main/java/com/redhat/developer/demos/customer/tracing/HttpHeaderForwarderHandlerInterceptor.java
+
+and
+
+https://github.com/jchraibi/istio-tutorial/blob/master/customer/src/main/java/com/redhat/developer/demos/customer/CustomerApplication.java#L21-L31
+
 
 4 - Route rules 101 (JCH)
 
 5 - Smart Routing (JCH + LBR)
 
-
 6 - SLA & Error handling (LBR + JCH)
 
-
 7 - Circuit Breaker (LBR)
-
 
 8 - Ultimate resilience (JCH)
 
@@ -468,23 +529,9 @@ curl customer-tutorial.$(minishift ip).nip.io
 
 Note: you may have to refresh the browser for the Prometheus graph to update. And you may wish to make the interval 5m (5 minutes) as seen in the screenshot above.
 
-## Tracing
 
-Tracing requires a bit of work on the Java side.  Each microservice needs to pass on the headers which are used to enable the traces.
 
-https://github.com/redhat-developer-demos/istio-tutorial/blob/master/customer/src/main/java/com/redhat/developer/demos/customer/tracing/HttpHeaderForwarderHandlerInterceptor.java
 
-and
-
-https://github.com/redhat-developer-demos/istio-tutorial/blob/master/customer/src/main/java/com/redhat/developer/demos/customer/CustomerApplication.java#L21-L31
-
-To open the Jaeger console, select customer from the list of services and Find Traces
-
-```bash
-minishift openshift service jaeger-query --in-browser
-```
-
-![alt text](readme_images/jaegerUI.png "Jaeger with Customer")
 
 ## Istio RouteRule Changes
 
