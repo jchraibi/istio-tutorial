@@ -1,8 +1,28 @@
-Genèse (JCH)
+# Red hat Developers Istio tutorial
 
-Istio (JCH)
+There are three different and super simple microservices in this system and they are chained together in the following sequence:
 
-### Installation
+customer -> preference -> recommendation
+
+For now, they have a simple exception handling solution for dealing with
+a missing dependent service, it just returns the error message to the end-user.
+
+**Table of Contents**
+
+<!-- toc -->
+
+* [Workshop](#workshop)
+  * [Monitoring](#monitoring)
+  * [Distributed Tracing](#distributed-tracing)
+  * [SLA and Error handling](#sla-and-error-handling)
+    * [Fault injection](#fault-injection)
+    * [Remediation](#remediation)
+  * [Security](#security)
+    * [Whitelist](#whitelist)
+    * [Blacklist](#blacklist)
+* [Tips & Tricks](#tips-tricks)
+
+## Installation
 
 ```bash
 #!/bin/bash
@@ -137,12 +157,11 @@ and
 
 https://github.com/jchraibi/istio-tutorial/blob/master/customer/src/main/java/com/redhat/developer/demos/customer/CustomerApplication.java#L21-L31
 
-
 ### 4 - Route rules 101 (JCH)
 
 ### 5 - Smart Routing (JCH + LBR)
 
-### 6 - SLA & Error handling
+### 6 - SLA and Error handling
 
 #### Chaos engineering
 
@@ -193,7 +212,7 @@ As an exercise, change the `recommendation-delay` route rule configuration on th
 
 Clean up
 
-```
+```bash
 istioctl delete routerule recommendation-delay -n tutorial
 ```
 
@@ -288,11 +307,234 @@ First, introduce some wait time in `recommendation v2` by uncommenting the line 
 
 Rebuild and redeploy.
 
+```bash
+cd recommendation
+mvn clean package
+docker build -t example/recommendation:v2 .
+oc delete pod -l app=recommendation,version=v2 -n tutorial
+cd ..
+```
+
+Hit the customer endpoint a few times, to see the load-balancing between v1 and v2 but with v2 taking a bit of time to respond (3 seconds as per the `timeout()` handler added into `RecommendationVerticle.java` ;-))
+
+Then add the timeout rule
+
+```bash
+istioctl create -f istiofiles/route-rule-recommendation-timeout.yml -n tutorial
+```
+
+You will see it return v1 OR `upstream request timeout` after waiting about 1 second
+
+```bash
+customer => preference => recommendation v1 from '2793872006-rq7fs': 1518
+customer => 503 preference => 504 upstream request timeout
+customer => preference => recommendation v1 from '2793872006-rq7fs': 1519
+customer => 503 preference => 504 upstream request timeout
+customer => preference => recommendation v1 from '2793872006-rq7fs': 1520
+customer => 503 preference => 504 upstream request timeout
+```
+
+Clean up, delete the timeout rule
+
+```bash
+istioctl delete -f istiofiles/route-rule-recommendation-timeout.yml -n tutorial
+```
+
 ### 7 - Circuit Breaker (LBR)
+
+#### Fail Fast with Max Connections and Max Pending Requests
+
+First, make sure to uncomment `router.get("/").handler(this::timeout);` in the RecommendationVerticle.java:
+
+```java
+    Router router = Router.router(vertx);
+    router.get("/").handler(this::logging);
+    router.get("/").handler(this::timeout);
+    router.get("/").handler(this::getRecommendations);
+    router.get("/misbehave").handler(this::misbehave);
+    router.get("/behave").handler(this::behave);
+```
+
+And follow the Updating & redeploying code steps to get this slower v2 deployed.
+
+Second, you need to insure you have a `routerule` in place. Let's use a 50/50 split of traffic:
+
+```bash
+istioctl create -f istiofiles/route-rule-recommendation-v1_and_v2_50_50.yml -n tutorial
+```
+**Load test without circuit breaker**
+
+Let's have a load-test using the `siege` command line tool. We'll have 20 clients sending 2 concurrent requests each:
+
+```bash
+siege -r 2 -c 20 -v customer-tutorial.$(minishift ip).nip.io
+```
+
+You should see an output similar to this one:
+
+```bash
+** SIEGE 4.0.4
+** Preparing 20 concurrent users for battle.
+The server is now under siege...
+HTTP/1.1 200     0.11 secs:      74 bytes ==> GET  /
+HTTP/1.1 200     0.11 secs:      74 bytes ==> GET  /
+HTTP/1.1 200     0.14 secs:      74 bytes ==> GET  /
+...
+Transactions:		            40 hits
+Availability:		        100.00 %
+Elapsed time:		          6.24 secs
+Data transferred:	        0.00 MB
+Response time:		        1.66 secs
+Transaction rate:	        6.41 trans/sec
+Throughput:		            0.00 MB/sec
+Concurrency:		         10.67
+Successful transactions:    40
+Failed transactions:	       0
+Longest transaction:	    3.21
+Shortest transaction:	    0.01
+```
+All of the requests to our system were successful, but it took some time to run the test, as the `v2` instance/pod was a slow performer.
+
+But suppose that in a production system this 3s delay was caused by too many concurrent requests to the same instance/pod. We don't want multiple requests getting queued or making the instance/pod even slower. So we'll add a circuit breaker that will open whenever we have more than 1 request being handled by any instance/pod.
+
+```bash
+istioctl create -f istiofiles/recommendation_cb_policy_version_v2.yml -n tutorial
+
+istioctl get destinationpolicies -n tutorial
+```
+**Load test with circuit breaker**
+
+Let's see the behaviour when running `siege` again:
+
+```bash
+siege -r 2 -c 20 -v customer-tutorial.$(minishift ip).nip.io
+```
+
+```bash
+** SIEGE 4.0.4
+** Preparing 20 concurrent users for battle.
+The server is now under siege...
+HTTP/1.1 200     0.07 secs:      74 bytes ==> GET  /
+HTTP/1.1 200     0.09 secs:      74 bytes ==> GET  /
+HTTP/1.1 200     0.15 secs:      74 bytes ==> GET  /
+HTTP/1.1 503     0.15 secs:      92 bytes ==> GET  /
+HTTP/1.1 200     0.15 secs:      74 bytes ==> GET  /
+HTTP/1.1 503     0.15 secs:      92 bytes ==> GET  /
+HTTP/1.1 503     0.16 secs:      92 bytes ==> GET  /
+...
+Transactions:		          22 hits
+Availability:		       55.00 %
+Elapsed time:		        9.11 secs
+Data transferred:	      0.00 MB
+Response time:		      1.09 secs
+Transaction rate:	      2.41 trans/sec
+Throughput:		          0.00 MB/sec
+Concurrency:		        2.63
+Successful transactions:        22
+Failed transactions:	          18
+Longest transaction:	        6.10
+Shortest transaction:	        0.01
+```
+
+You'll get a little more of 50 percent success in requests. That's the circuit breaker being opened whenever Istio detects more than 1 pending request being handled by the instance/pod tagged `v2`.
+
+More information on the fields for the simple circuit-breaker
+https://istio.io/docs/reference/config/istio.routing.v1alpha1.html#CircuitBreaker.SimpleCircuitBreakerPolicy
+
+Clean up
+
+```bash
+istioctl delete routerule recommendation-v1-v2 -n tutorial
+istioctl delete -f istiofiles/recommendation_cb_policy_version_v2.yml -n tutorial
+```
+
+#### Pool Ejection
+
+Pool ejection or *outlier detection* is a resilience strategy that takes place whenever we have a pool of instances/pods to serve a client request. If the request is forwarded to a certain instance and it fails (e.g. returns a 50x error code), then Istio will eject this instance from the pool for a certain *sleep window*. In our example the sleep window is configured to be 15s. This increases the overall availability by making sure that only healthy pods participate in the pool of instances.
+
+First, you need to insure you have a `routerule` in place. Let's use a 50/50 split of traffic:
+
+```bash
+istioctl create -f istiofiles/route-rule-recommendation-v1_and_v2_50_50.yml -n tutorial
+```
+
+You'll also need to scale the number of instances of `v2` deployment:
+
+```bash
+oc scale deployment recommendation-v2 --replicas=2 -n tutorial
+```
+
+**Test behavior without failing instances**
+
+Throw some requests to the customer endpoint like this `for i in {1..10}; do curl "customer-tutorial.$(minishift ip).nip.io"; done`
+
+You will see the load balancing 50/50 between the two different versions of the recommendation service. And within version v2, you will also see that some requests are handled by one pod and some requests are handled by the other pod.
+
+**Test behavior with failing instance and without pool ejection**
+
+Let's get the name for the pods of `recommendation-v2`:
+
+```bash
+oc get pods -l app=recommendation,version=v2
+```
+
+You should get something like:
+
+```bash
+NAME                                 READY     STATUS    RESTARTS   AGE
+recommendation-v2-3406724218-g6n7b   2/2       Running   0          1h
+recommendation-v2-3406724218-zv6dt   2/2       Running   0          37m
+```
+
+Now we'll get into one the pods and add some erratic behavior on it. Get one of the pod names from your system and replace on the following command accordingly:
+
+```bash
+oc rsh recommendation-v2-3406724218-zv6dt
+```
+
+You will be inside the application container of your pod `recommendation-v2-3406724218-zv6dt`. Now execute:
+
+```bash
+curl localhost:8080/misbehave
+exit
+```
+
+Now throw some requests at the customer endpoint. You should see something like:
+
+```bash
+customer => 503 preference => 503 recommendation misbehavior from '3406724218-zv6dt'
+customer => preference => recommendation v1 from '2793872006-rq7fs': 1599
+customer => preference => recommendation v2 from '3406724218-g6n7b': 59
+customer => preference => recommendation v1 from '2793872006-rq7fs': 1600
+customer => 503 preference => 503 recommendation misbehavior from '3406724218-zv6dt'
+customer => preference => recommendation v1 from '2793872006-rq7fs': 1601
+customer => preference => recommendation v2 from '3406724218-g6n7b': 60
+customer => 503 preference => 503 recommendation misbehavior from '3406724218-zv6dt'
+customer => preference => recommendation v1 from '2793872006-rq7fs': 1602
+```
+
+**Test behavior with failing instance and with pool ejection**
+
+Now let's add the pool ejection behavior:
+
+```bash
+istioctl create -f istiofiles/recommendation_cb_policy_pool_ejection.yml -n tutorial
+```
+
+2 identical `DestinationPolicy` objects are created and apply respectively to the `v1` and the `v2` pods/instances of `recommendation`. Throw some requesrs at the customer endpoint and you will see that whenever you get a failing request with 503 from the pod recommendation-v2-3406724218-zv6dt, it gets ejected from the pool, and it doesn't receive any more requests until the sleep window expires - which takes at least 15s.
+
+```bash
+customer => 503 preference => 503 recommendation misbehavior from '3406724218-zv6dt'
+customer => preference => recommendation v2 from '3406724218-g6n7b': 68
+customer => preference => recommendation v2 from '3406724218-g6n7b': 69
+customer => preference => recommendation v1 from '2793872006-rq7fs': 1606
+customer => preference => recommendation v2 from '3406724218-g6n7b': 70
+customer => preference => recommendation v1 from '2793872006-rq7fs': 1607
+```
 
 ### 8 - Ultimate resilience (JCH)
 
-### 9 - Security (LBR)
+### 9 - Security
 
 #### Access Control
 
@@ -338,14 +580,6 @@ istioctl delete -f istiofiles/acl-blacklist.yml -n tutorial
 
 # Java (Spring Boot and Vert.x) + Istio on Kubernetes/OpenShift
 
-There are three different and super simple microservices in this system and they are chained together in the following sequence:
-
-customer -> preference -> recommendation
-
-For now, they have a simple exception handling solution for dealing with
-a missing dependent service, it just returns the error message to the end-user.
-
-There are two more simple apps that illustrate how Istio handles egress routes: egressgithub and egresshttpbin
 
 **Table of Contents**
 
@@ -1258,249 +1492,7 @@ istioctl delete -f istiofiles/recommendation_rate_limit_handler.yml
 
 ## Circuit Breaker
 
-### Fail Fast with Max Connections and Max Pending Requests
 
-First, make sure to uncomment `router.get("/").handler(this::timeout);` in the RecommendationVerticle.java:
-
-```java
-    Router router = Router.router(vertx);
-    router.get("/").handler(this::logging);
-    router.get("/").handler(this::timeout);
-    router.get("/").handler(this::getRecommendations);
-    router.get("/misbehave").handler(this::misbehave);
-    router.get("/behave").handler(this::behave);
-```
-
-And follow the Updating & redeploying code steps to get this slower v2 deployed.
-
-Second, you need to insure you have a `routerule` in place. Let's use a 50/50 split of traffic:
-
-```bash
-istioctl create -f istiofiles/route-rule-recommendation-v1_and_v2_50_50.yml -n tutorial
-```
-
-#### Load test without circuit breaker
-
-Let's perform a load test in our system with `siege`. We'll have 20 clients sending 2 concurrent requests each:
-
-```bash
-siege -r 2 -c 20 -v customer-tutorial.$(minishift ip).nip.io
-```
-
-You should see an output similar to this:
-
-![siege output with all successful requests](readme_images/siege_ok.png)
-
-All of the requests to our system were successful, but it took some time to run the test, as the `v2` instance/pod was a slow performer.
-
-But suppose that in a production system this 3s delay was caused by too many concurrent requests to the same instance/pod. We don't want multiple requests getting queued or making the instance/pod even slower. So we'll add a circuit breaker that will **open** whenever we have more than 1 request being handled by any instance/pod.
-
-```bash
-istioctl create -f istiofiles/recommendation_cb_policy_version_v2.yml -n tutorial
-
-istioctl get destinationpolicies -n tutorial
-```
-
-More information on the fields for the simple circuit-breaker
-https://istio.io/docs/reference/config/istio.routing.v1alpha1.html#CircuitBreaker.SimpleCircuitBreakerPolicy
-
-#### Load test with circuit breaker
-
-Now let's see what is the behavior of the system running `siege` again:
-
-```bash
-siege -r 2 -c 20 -v customer-tutorial.$(minishift ip).nip.io
-```
-
-![siege output with some 503 requests due to open circuit breaker](readme_images/siege_cb_503.png)
-
-You can run siege multiple times, but in all of the executions you should see some `503` errors being displayed in the results. That's the circuit breaker being opened whenever Istio detects more than 1 pending request being handled by the instance/pod.
-
-#### Clean up
-
-```bash
-istioctl delete routerule recommendation-v1-v2 -n tutorial
-istioctl delete -f istiofiles/recommendation_cb_policy_version_v2.yml
-```
-
-### Pool Ejection
-
-Pool ejection or *outlier detection* is a resilience strategy that takes place whenever we have a pool of instances/pods to serve a client request. If the request is forwarded to a certain instance and it fails (e.g. returns a 50x error code), then Istio will eject this instance from the pool for a certain *sleep window*. In our example the sleep window is configured to be 15s. This increases the overall availability by making sure that only healthy pods participate in the pool of instances.
-
-First, you need to insure you have a `routerule` in place. Let's use a 50/50 split of traffic:
-
-```bash
-istioctl create -f istiofiles/route-rule-recommendation-v1_and_v2_50_50.yml -n tutorial
-```
-
-#### Scale number of instances of `v2` deployment
-
-```bash
-oc scale deployment recommendation-v2 --replicas=2 -n tutorial
-oc get pods -w
-```
-
-Wait for all the pods to be in the ready state.
-
-#### Test behavior without failing instances
-
-Throw some requests at the customer endpoint:
-
-```bash
-#!/bin/bash
-while true
-do curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-```
-
-You will see the load balancing 50/50 between the two different versions of the `recommendation` service. And within version `v2`, you will also see that some requests are handled by one pod and some requests are handled by the other pod.
-
-```bash
-customer => preference => recommendation v1 from '2039379827-jmm6x': 447
-customer => preference => recommendation v2 from '2036617847-spdrb': 26
-customer => preference => recommendation v1 from '2039379827-jmm6x': 448
-customer => preference => recommendation v2 from '2036617847-spdrb': 27
-customer => preference => recommendation v1 from '2039379827-jmm6x': 449
-customer => preference => recommendation v1 from '2039379827-jmm6x': 450
-customer => preference => recommendation v2 from '2036617847-spdrb': 28
-customer => preference => recommendation v1 from '2039379827-jmm6x': 451
-customer => preference => recommendation v1 from '2039379827-jmm6x': 452
-customer => preference => recommendation v2 from '2036617847-spdrb': 29
-customer => preference => recommendation v2 from '2036617847-spdrb': 30
-customer => preference => recommendation v2 from '2036617847-hdjv2': 216
-customer => preference => recommendation v1 from '2039379827-jmm6x': 453
-customer => preference => recommendation v2 from '2036617847-spdrb': 31
-customer => preference => recommendation v2 from '2036617847-hdjv2': 217
-customer => preference => recommendation v2 from '2036617847-hdjv2': 218
-customer => preference => recommendation v1 from '2039379827-jmm6x': 454
-customer => preference => recommendation v1 from '2039379827-jmm6x': 455
-customer => preference => recommendation v2 from '2036617847-hdjv2': 219
-customer => preference => recommendation v2 from '2036617847-hdjv2': 220
-```
-
-#### Test behavior with failing instance and without pool ejection
-
-Let's get the name of the pods from recommendation `v2`:
-
-```bash
-oc get pods -l app=recommendation,version=v2
-```
-
-You should see something like this:
-
-```bash
-recommendation-v2-2036617847-hdjv2   2/2       Running   0          1h
-recommendation-v2-2036617847-spdrb   2/2       Running   0          7m
-```
-
-Now we'll get into one the pods and add some erratic behavior on it. Get one of the pod names from your system and replace on the following command accordingly:
-
-```bash
-oc exec -it recommendation-v2-2036617847-spdrb -c recommendation /bin/bash
-```
-
-You will be inside the application container of your pod `recommendation-v2-2036617847-spdrb`. Now execute:
-
-```bash
-curl localhost:8080/misbehave
-exit
-```
-
-This is a special endpoint that will make our application return only `503`s.
-
-Throw some requests at the customer endpoint:
-
-```bash
-#!/bin/bash
-while true
-do curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-```
-
-You'll see that whenever the pod `recommendation-v2-2036617847-spdrb` receives a request, you get a `503` error:
-
-```bash
-customer => preference => recommendation v1 from '2039379827-jmm6x': 494
-customer => preference => recommendation v1 from '2039379827-jmm6x': 495
-customer => preference => recommendation v2 from '2036617847-hdjv2': 248
-customer => preference => recommendation v1 from '2039379827-jmm6x': 496
-customer => preference => recommendation v1 from '2039379827-jmm6x': 497
-customer => 503 preference => 503 recommendation misbehavior from '2036617847-spdrb'
-customer => preference => recommendation v2 from '2036617847-hdjv2': 249
-customer => preference => recommendation v1 from '2039379827-jmm6x': 498
-customer => 503 preference => 503 recommendation misbehavior from '2036617847-spdrb'
-customer => preference => recommendation v2 from '2036617847-hdjv2': 250
-customer => preference => recommendation v1 from '2039379827-jmm6x': 499
-customer => preference => recommendation v1 from '2039379827-jmm6x': 500
-customer => 503 preference => 503 recommendation misbehavior from '2036617847-spdrb'
-customer => preference => recommendation v1 from '2039379827-jmm6x': 501
-customer => preference => recommendation v2 from '2036617847-hdjv2': 251
-customer => 503 preference => 503 recommendation misbehavior from '2036617847-spdrb'
-```
-
-#### Test behavior with failing instance and with pool ejection
-
-Now let's add the pool ejection behavior:
-
-```bash
-istioctl create -f istiofiles/recommendation_cb_policy_pool_ejection.yml -n tutorial
-```
-
-Throw some requests at the customer endpoint:
-
-```bash
-#!/bin/bash
-while true
-do curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-```
-
-You will see that whenever you get a failing request with `503` from the pod `recommendation-v2-2036617847-spdrb`, it gets ejected from the pool, and it doesn't receive any more requests until the sleep window expires - which takes at least 15s.
-
-```bash
-customer => preference => recommendation v1 from '2039379827-jmm6x': 509
-customer => 503 preference => 503 recommendation misbehavior from '2036617847-spdrb'
-customer => preference => recommendation v1 from '2039379827-jmm6x': 510
-customer => preference => recommendation v1 from '2039379827-jmm6x': 511
-customer => preference => recommendation v1 from '2039379827-jmm6x': 512
-customer => preference => recommendation v1 from '2039379827-jmm6x': 513
-customer => preference => recommendation v1 from '2039379827-jmm6x': 514
-customer => preference => recommendation v2 from '2036617847-hdjv2': 256
-customer => preference => recommendation v2 from '2036617847-hdjv2': 257
-customer => preference => recommendation v1 from '2039379827-jmm6x': 515
-customer => preference => recommendation v2 from '2036617847-hdjv2': 258
-customer => preference => recommendation v2 from '2036617847-hdjv2': 259
-customer => preference => recommendation v2 from '2036617847-hdjv2': 260
-customer => preference => recommendation v1 from '2039379827-jmm6x': 516
-customer => preference => recommendation v1 from '2039379827-jmm6x': 517
-customer => preference => recommendation v1 from '2039379827-jmm6x': 518
-customer => 503 preference => 503 recommendation misbehavior from '2036617847-spdrb'
-customer => preference => recommendation v1 from '2039379827-jmm6x': 519
-customer => preference => recommendation v1 from '2039379827-jmm6x': 520
-customer => preference => recommendation v1 from '2039379827-jmm6x': 521
-customer => preference => recommendation v2 from '2036617847-hdjv2': 261
-customer => preference => recommendation v2 from '2036617847-hdjv2': 262
-customer => preference => recommendation v2 from '2036617847-hdjv2': 263
-customer => preference => recommendation v1 from '2039379827-jmm6x': 522
-customer => preference => recommendation v1 from '2039379827-jmm6x': 523
-customer => preference => recommendation v2 from '2036617847-hdjv2': 264
-customer => preference => recommendation v1 from '2039379827-jmm6x': 524
-customer => preference => recommendation v1 from '2039379827-jmm6x': 525
-customer => preference => recommendation v1 from '2039379827-jmm6x': 526
-customer => preference => recommendation v1 from '2039379827-jmm6x': 527
-customer => preference => recommendation v2 from '2036617847-hdjv2': 265
-customer => preference => recommendation v2 from '2036617847-hdjv2': 266
-customer => preference => recommendation v1 from '2039379827-jmm6x': 528
-customer => preference => recommendation v2 from '2036617847-hdjv2': 267
-customer => preference => recommendation v2 from '2036617847-hdjv2': 268
-customer => preference => recommendation v2 from '2036617847-hdjv2': 269
-customer => 503 preference => 503 recommendation misbehavior from '2036617847-spdrb'
-customer => preference => recommendation v1 from '2039379827-jmm6x': 529
-customer => preference => recommendation v2 from '2036617847-hdjv2': 270
-```
 
 ### Ultimate resilience with retries, circuit breaker, and pool ejection
 
