@@ -53,6 +53,45 @@ for i in {1..100}; do curl "customer-tutorial.$(minishift ip).nip.io"; done
 
 Internal metrics on everything running into `istio-system` project.
 
+### Custom metrics
+
+From the `istio-tutorial` directoy:
+
+```bash
+istioctl create -f istiofiles/recommendation_requestcount.yml -n istio-system
+```
+
+Send a bunch of request and check next request within Prometheus:
+
+```bash
+round(increase(istio_recommendation_request_count{destination="recommendation.tutorial.svc.cluster.local" }[60m]))
+```
+
+
+### Custom log entries
+
+From the `istio-tutorial` directoy:
+
+```bash
+istioctl create -f istiofiles/recommendation_entry.yml -n istio-system
+```
+Send a bunch of requests and connect to Mixer logs to filter new `recommendationentry` entries:
+
+```bash
+ oc logs istio-mixer-2464598866-rnhh8 -n istio-system -c mixer -f | grep recommendationentry
+ ```
+
+```bash
+{"level":"warn","time":"2018-03-12T12:15:37.218825Z","instance":"recommendationentry.logentry.istio-system","destination":"recommendation","latency":"1.503ms","responseCode":200,"responseSize":48,"source":"preference","user":"unknown"}
+```
+
+Cleanup
+
+```bash
+istioctl delete -f istiofiles/recommendation_requestcount.yml -n istio-system
+istioctl delete -f istiofiles/recommendation_entry.yml -n istio-system
+```
+
 ## 3 - Distributed tracing
 
 Being already logged on `istio-system` project:
