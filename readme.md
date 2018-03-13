@@ -20,6 +20,8 @@ a missing dependent service, it just returns the error message to the end-user.
   * [Security](#security)
     * [Whitelist](#whitelist)
     * [Blacklist](#blacklist)
+    * [Egress](#egress)
+    * [Mutual TLS](#mutual-tls)
 * [Tips & Tricks](#tips-tricks)
 
 ## Installation
@@ -729,6 +731,162 @@ Scale-up / scale down : istio-pilot, istio-ingress, istio-mixer
 
 Scale-up / scale down : preference
 
+
+## Tips & Tricks
+
+Some tips and tricks that you might find handy
+
+You have two containers in a pod
+
+```bash
+oc get pods -o jsonpath="{.items[*].spec.containers[*].name}" -l app=customer -n tutorial
+```
+
+From these images
+
+```bash
+oc get pods -o jsonpath="{.items[*].spec.containers[*].image}" -l app=customer -n tutorial
+```
+
+Get the pod ids
+
+```bash
+CPOD=$(oc get pods -o jsonpath='{.items[*].metadata.name}' -l app=customer -n tutorial)
+PPOD=$(oc get pods -o jsonpath='{.items[*].metadata.name}' -l app=preference -n tutorial)
+RPOD1=$(oc get pods -o jsonpath='{.items[*].metadata.name}' -l app=recommendation,version=v1 -n tutorial)
+RPOD2=$(oc get pods -o jsonpath='{.items[*].metadata.name}' -l app=recommendation,version=v2 -n tutorial)
+```
+
+The pods all see each other's services
+
+```bash
+oc exec $CPOD -c customer -n tutorial curl http://preference:8080
+oc exec $CPOD -c customer -n tutorial curl http://recommendation:8080
+oc exec $RPOD2 -c recommendation -n tutorial curl http://customer:8080
+```
+
+```bash
+oc exec $CPOD -c customer -n tutorial curl http://localhost:15000/routes > afile.json
+```
+
+Look for "route_config_name": "8080", you should see 3 entries for customer, preference and recommendation
+
+```json
+{
+	"name": "8080",
+	"virtual_hosts": [{
+		"name": "customer.springistio.svc.cluster.local|http",
+		"domains": ["customer:8080", "customer", "customer.springistio:8080", "customer.springistio", "customer.springistio.svc:8080", "customer.springistio.svc", "customer.springistio.svc.cluster:8080", "customer.springistio.svc.cluster", "customer.springistio.svc.cluster.local:8080", "customer.springistio.svc.cluster.local", "172.30.176.159:8080", "172.30.176.159"],
+		"routes": [{
+			"match": {
+				"prefix": "/"
+			},
+			"route": {
+				"cluster": "out.customer.springistio.svc.cluster.local|http",
+				"timeout": "0s"
+			},
+			"decorator": {
+				"operation": "default-route"
+			}
+		}]
+	}, {
+		"name": "preference.springistio.svc.cluster.local|http",
+		"domains": ["preference:8080", "preference", "preference.springistio:8080", "preference.springistio", "preference.springistio.svc:8080", "preference.springistio.svc", "preference.springistio.svc.cluster:8080", "preference.springistio.svc.cluster", "preference.springistio.svc.cluster.local:8080", "preference.springistio.svc.cluster.local", "172.30.249.133:8080", "172.30.249.133"],
+		"routes": [{
+			"match": {
+				"prefix": "/"
+			},
+			"route": {
+				"cluster": "out.preference.springistio.svc.cluster.local|http",
+				"timeout": "0s"
+			},
+			"decorator": {
+				"operation": "default-route"
+			}
+		}]
+	}, {
+		"name": "recommendation.springistio.svc.cluster.local|http",
+		"domains": ["recommendation:8080", "recommendation", "recommendation.springistio:8080", "recommendation.springistio", "recommendation.springistio.svc:8080", "recommendation.springistio.svc", "recommendation.springistio.svc.cluster:8080", "recommendation.springistio.svc.cluster", "recommendation.springistio.svc.cluster.local:8080", "recommendation.springistio.svc.cluster.local", "172.30.209.113:8080", "172.30.209.113"],
+		"routes": [{
+			"match": {
+				"prefix": "/"
+			},
+			"route": {
+				"cluster": "out.recommendation.springistio.svc.cluster.local|http",
+				"timeout": "0s"
+			},
+			"decorator": {
+				"operation": "default-route"
+			}
+		}]
+	}]
+}
+```
+
+Now add a new routerule
+
+```bash
+oc create -f istiofiles/route-rule-recommendation-v2.yml
+```
+
+The review the routes again
+
+```bash
+oc exec $CPOD -c customer -n tutorial curl http://localhost:15000/routes > bfile.json
+```
+
+Here is the Before:
+
+```javascript
+			"route": {
+				"cluster": "out.recommendation.springistio.svc.cluster.local|http",
+				"timeout": "0s"
+			},
+```
+
+and
+
+```javascript
+			"decorator": {
+				"operation": "default-route"
+			}
+```
+
+And the After:
+
+```javascript
+			"route": {
+				"cluster": "out.recommendation.springistio.svc.cluster.local|http|version=v2",
+				"timeout": "0s"
+			},
+```
+
+and
+
+```javascript
+			"decorator": {
+				"operation": "recommendation-default"
+			}
+```
+
+If you need the Pod IP
+
+```bash
+oc get pods -o jsonpath='{.items[*].status.podIP}' -l app=customer -n tutorial
+```
+
+Dive into the istio-proxy container
+
+```bash
+oc exec -it $CPOD -c istio-proxy -n tutorial /bin/bash
+cd /etc/istio/proxy
+ls
+cat envoy-rev3.json
+```
+
+Snowdrop Troubleshooting
+
+https://github.com/snowdrop/spring-boot-quickstart-istio/blob/master/TROUBLESHOOT.md
 
 
 # Java (Spring Boot and Vert.x) + Istio on Kubernetes/OpenShift
@@ -1716,320 +1874,3 @@ oc delete pod -l app=recommendation,version=v2
 oc delete routerule recommendation-v1-v2 -n tutorial
 istioctl delete -f istiofiles/recommendation_cb_policy_pool_ejection.yml -n tutorial
 ```
-
-## Egress
-
-There are two examples of egress routing, one for httpbin.org and one for github.  Egress routes allow you to apply rules to how internal services interact with external APIs/services.
-
-Create a namespace/project to hold these egress examples
-
-```bash
-oc new-project istioegress
-oc adm policy add-scc-to-user privileged -z default -n istioegress
-```
-
-#### Create HTTPBin Java App
-
-```bash
-cd egress/egresshttpbin/
-
-mvn spring-boot:run
-
-curl localhost:8080
-
-ctrl-c
-
-mvn clean package
-
-docker build -t example/egresshttpbin:v1 .
-
-docker images | grep egress
-
-docker run -it -p 8080:8080 --rm example/egresshttpbin:v1
-
-curl $(minishift ip):8080
-
-ctrl-c
-
-docker ps | grep egress
-
-docker ps -a | grep egress
-
-oc apply -f <(istioctl kube-inject -f src/main/kubernetes/Deployment.yml) -n istioegress
-
-oc create -f src/main/kubernetes/Service.yml
-
-oc expose service egresshttpbin
-
-curl egresshttpbin-istioegress.$(minishift ip).nip.io
-
-```
-
-Note: It does not work...yet, more to come.
-
-Back to the main istio-tutorial directory
-
-```bash
-cd ../..
-```
-
-#### Create the Github Java App
-
-```bash
-cd egress/egressgithub/
-
-mvn clean package
-
-docker build -t example/egressgithub:v1 .
-
-docker images | grep egress
-
-docker run -it -p 8080:8080 --rm example/egressgithub:v1
-
-curl $(minishift ip):8080
-```
-
-Note: it will not work now but it will once Istio-ized
-
-```bash
-ctrl-c
-
-docker ps | grep egress
-
-oc apply -f <(istioctl kube-inject -f src/main/kubernetes/Deployment.yml) -n istioegress
-
-oc create -f src/main/kubernetes/Service.yml
-
-oc expose service egressgithub
-
-curl egressgithub-istioegress.$(minishift ip).nip.io
-
-cd ../..
-```
-
-#### Istio-ize Egress
-
-```bash
-istioctl create -f istiofiles/egress_httpbin.yml
-
-istioctl get egressrules
-
-curl egresshttpbin-istioegress.$(minishift ip).nip.io
-```
-
-or shell into the pod by getting its name and then using that name with oc exec
-
-```bash
-oc exec -it $(oc get pods -o jsonpath="{.items[*].metadata.name}" -l app=egresshttpbin,version=v1) -c egresshttpbin /bin/bash
-
-curl localhost:8080
-
-curl httpbin.org/user-agent
-
-curl httpbin.org/headers
-
-exit
-```
-
-add a egressrule for google
-
-```bash
-cat <<EOF | istioctl create -f -
-apiVersion: config.istio.io/v1alpha2
-kind: EgressRule
-metadata:
-  name: google-egress-rule
-spec:
-  destination:
-    service: www.google.com
-  ports:
-    - port: 443
-      protocol: https
-EOF
-```
-
-and shell into the github pod for testing google access
-
-```bash
-oc exec -it $(oc get pods -o jsonpath="{.items[*].metadata.name}" -l app=egressgithub,version=v1) -c egressgithub /bin/bash
-
-curl http://www.google.com:443
-
-exit
-```
-
-Now, apply the egressrule for github and execute the Java code that hits api.github.com/users
-
-```bash
-istioctl create -f istiofiles/egress_github.yml
-
-curl egressgithub-istioegress.$(minishift ip).nip.io
-```
-#### Clean up
-
-```bash
-istioctl delete egressrule httpbin-egress-rule -n istioegress
-istioctl delete egressrule google-egress-rule -n istioegress
-istioctl delete egressrule github-egress-rule -n istioegress
-```
-and if you need some memory back, just delete the project
-
-```bash
-oc delete project istioegress
-```
-
-## Tips & Tricks
-
-Some tips and tricks that you might find handy
-
-You have two containers in a pod
-
-```bash
-oc get pods -o jsonpath="{.items[*].spec.containers[*].name}" -l app=customer -n tutorial
-```
-
-From these images
-
-```bash
-oc get pods -o jsonpath="{.items[*].spec.containers[*].image}" -l app=customer -n tutorial
-```
-
-Get the pod ids
-
-```bash
-CPOD=$(oc get pods -o jsonpath='{.items[*].metadata.name}' -l app=customer -n tutorial)
-PPOD=$(oc get pods -o jsonpath='{.items[*].metadata.name}' -l app=preference -n tutorial)
-RPOD1=$(oc get pods -o jsonpath='{.items[*].metadata.name}' -l app=recommendation,version=v1 -n tutorial)
-RPOD2=$(oc get pods -o jsonpath='{.items[*].metadata.name}' -l app=recommendation,version=v2 -n tutorial)
-```
-
-The pods all see each other's services
-
-```bash
-oc exec $CPOD -c customer -n tutorial curl http://preference:8080
-oc exec $CPOD -c customer -n tutorial curl http://recommendation:8080
-oc exec $RPOD2 -c recommendation -n tutorial curl http://customer:8080
-```
-
-```bash
-oc exec $CPOD -c customer -n tutorial curl http://localhost:15000/routes > afile.json
-```
-
-Look for "route_config_name": "8080", you should see 3 entries for customer, preference and recommendation
-
-```json
-{
-	"name": "8080",
-	"virtual_hosts": [{
-		"name": "customer.springistio.svc.cluster.local|http",
-		"domains": ["customer:8080", "customer", "customer.springistio:8080", "customer.springistio", "customer.springistio.svc:8080", "customer.springistio.svc", "customer.springistio.svc.cluster:8080", "customer.springistio.svc.cluster", "customer.springistio.svc.cluster.local:8080", "customer.springistio.svc.cluster.local", "172.30.176.159:8080", "172.30.176.159"],
-		"routes": [{
-			"match": {
-				"prefix": "/"
-			},
-			"route": {
-				"cluster": "out.customer.springistio.svc.cluster.local|http",
-				"timeout": "0s"
-			},
-			"decorator": {
-				"operation": "default-route"
-			}
-		}]
-	}, {
-		"name": "preference.springistio.svc.cluster.local|http",
-		"domains": ["preference:8080", "preference", "preference.springistio:8080", "preference.springistio", "preference.springistio.svc:8080", "preference.springistio.svc", "preference.springistio.svc.cluster:8080", "preference.springistio.svc.cluster", "preference.springistio.svc.cluster.local:8080", "preference.springistio.svc.cluster.local", "172.30.249.133:8080", "172.30.249.133"],
-		"routes": [{
-			"match": {
-				"prefix": "/"
-			},
-			"route": {
-				"cluster": "out.preference.springistio.svc.cluster.local|http",
-				"timeout": "0s"
-			},
-			"decorator": {
-				"operation": "default-route"
-			}
-		}]
-	}, {
-		"name": "recommendation.springistio.svc.cluster.local|http",
-		"domains": ["recommendation:8080", "recommendation", "recommendation.springistio:8080", "recommendation.springistio", "recommendation.springistio.svc:8080", "recommendation.springistio.svc", "recommendation.springistio.svc.cluster:8080", "recommendation.springistio.svc.cluster", "recommendation.springistio.svc.cluster.local:8080", "recommendation.springistio.svc.cluster.local", "172.30.209.113:8080", "172.30.209.113"],
-		"routes": [{
-			"match": {
-				"prefix": "/"
-			},
-			"route": {
-				"cluster": "out.recommendation.springistio.svc.cluster.local|http",
-				"timeout": "0s"
-			},
-			"decorator": {
-				"operation": "default-route"
-			}
-		}]
-	}]
-}
-```
-
-Now add a new routerule
-
-```bash
-oc create -f istiofiles/route-rule-recommendation-v2.yml
-```
-
-The review the routes again
-
-```bash
-oc exec $CPOD -c customer -n tutorial curl http://localhost:15000/routes > bfile.json
-```
-
-Here is the Before:
-
-```javascript
-			"route": {
-				"cluster": "out.recommendation.springistio.svc.cluster.local|http",
-				"timeout": "0s"
-			},
-```
-
-and
-
-```javascript
-			"decorator": {
-				"operation": "default-route"
-			}
-```
-
-And the After:
-
-```javascript
-			"route": {
-				"cluster": "out.recommendation.springistio.svc.cluster.local|http|version=v2",
-				"timeout": "0s"
-			},
-```
-
-and
-
-```javascript
-			"decorator": {
-				"operation": "recommendation-default"
-			}
-```
-
-If you need the Pod IP
-
-```bash
-oc get pods -o jsonpath='{.items[*].status.podIP}' -l app=customer -n tutorial
-```
-
-Dive into the istio-proxy container
-
-```bash
-oc exec -it $CPOD -c istio-proxy -n tutorial /bin/bash
-cd /etc/istio/proxy
-ls
-cat envoy-rev3.json
-```
-
-Snowdrop Troubleshooting
-
-https://github.com/snowdrop/spring-boot-quickstart-istio/blob/master/TROUBLESHOOT.md
