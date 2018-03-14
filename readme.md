@@ -11,9 +11,17 @@ a missing dependent service, it just returns the error message to the end-user.
 
 <!-- toc -->
 
+* [Installation](#installation)
 * [Workshop](#workshop)
+  * [Deployment and proxy injection](#deployment-and-proxy-injection)
+    * [Deploy customer](#deploy-customer)
+    * [Deploy preference](#deploy-preference)
+    * [Deploy recommendation](#deploy-recommendation)
+    * [Updating redeploying code](#updating-redeploying-code)
   * [Monitoring](#monitoring)
   * [Distributed Tracing](#distributed-tracing)
+  * [Routes rules 101](#route-rules-101)
+  * [Smart routing](#smart-routing)
   * [SLA and Error handling](#sla-and-error-handling)
     * [Fault injection](#fault-injection)
     * [Remediation](#remediation)
@@ -23,6 +31,9 @@ a missing dependent service, it just returns the error message to the end-user.
     * [Egress](#egress)
     * [Mutual TLS](#mutual-tls)
 * [Tips & Tricks](#tips-tricks)
+
+<!-- toc stop -->
+
 
 ## Installation
 
@@ -71,6 +82,218 @@ For minishift, with the admin-user addon, the user is "admin" and the password i
 
 ### 1 - Deployment and proxy injection
 
+#### Setup environment
+
+```bash
+eval $(minishift oc-env)
+eval $(minishift docker-env)
+oc login $(minishift ip):8443 -u admin -p admin
+```
+
+#### Deploy customer
+
+Make sure you have are logged in
+
+```bash
+oc whoami
+```
+
+and you have setup the project/namespace
+
+```bash
+oc new-project tutorial
+oc adm policy add-scc-to-user privileged -z default -n tutorial
+```
+
+Then clone the git repository
+
+```bash
+git clone https://github.com/redhat-developer-demos/istio-tutorial
+cd istio-tutorial
+```
+
+ Start deploying the microservice projects, starting with customer
+
+```bash
+cd customer
+
+mvn clean package
+
+docker build -t example/customer .
+
+docker images | grep customer
+```
+
+Note: Your very first docker build will take a bit of time as it downloads all the layers.  Subsequent rebuilds of the docker image, updating only the jar/app layer will be very fast.
+
+Now let's deploy the customer pod with its sidecar
+
+```bash
+oc apply -f <(istioctl kube-inject -f src/main/kubernetes/Deployment.yml) -n tutorial
+
+oc create -f src/main/kubernetes/Service.yml -n tutorial
+```
+
+Since customer is the forward most microservice (customer -> preference -> recommendation), let's add an OpenShift Route that exposes that endpoint.
+
+```bash
+oc expose service customer
+
+oc get route
+
+oc get pods -w
+```
+
+Waiting for Ready 2/2, to break out of the waiting use "ctrl-c"
+
+Then test the customer endpoint
+
+```bash
+curl customer-tutorial.$(minishift ip).nip.io
+```
+
+You should see the following error because preference and recommendation are not yet deployed.
+
+```bash
+customer => I/O error on GET request for "http://preference:8080": preference; nested exception is java.net.UnknownHostException: preference
+```
+
+Also review the logs
+
+```bash
+stern customer -c customer
+```
+
+You should see a stacktrace containing this cause:
+
+```bash
+org.springframework.web.client.ResourceAccessException: I/O error on GET request for "http://preference:8080": preference; nested exception is java.net.UnknownHostException: preference
+```
+
+Back to the main istio-tutorial directory
+
+```bash
+cd ..
+```
+
+#### Deploy preference
+
+```bash
+cd preference
+
+mvn clean package
+
+docker build -t example/preference .
+
+docker images | grep preference
+
+oc apply -f <(istioctl kube-inject -f src/main/kubernetes/Deployment.yml) -n tutorial
+
+oc create -f src/main/kubernetes/Service.yml
+
+oc get pods -w
+```
+
+Wait for the Ready 2/2
+
+```bash
+curl customer-tutorial.$(minishift ip).nip.io
+```
+
+It will respond with an error since recommendation is not yet deployed.
+Note: We could make this a bit more resilent in a future iteration of this tutorial
+
+```bash
+customer => 503 preference => I/O error on GET request for "http://recommendation:8080": recommendation; nested exception is java.net.UnknownHostException: recommendation
+```
+
+and check out the logs
+
+```bash
+stern preference -c preference
+```
+
+You should see a stacktrace containing this cause:
+
+```bash
+org.springframework.web.client.ResourceAccessException: I/O error on GET request for "http://recommendation:8080": recommendation; nested exception is java.net.UnknownHostException: recommendation
+```
+
+Back to the main istio-tutorial directory
+
+```bash
+cd ..
+```
+
+#### Deploy recommendation
+
+Note: The tag `v1` at the end of the image name is important.  We will be creating a v2 version of recommendation later in this tutorial. Having both a v1 and v2 version of the recommendation code will allow us to exercise some interesting aspects of Istio's capabilities.
+
+```bash
+cd recommendation
+
+mvn clean package
+
+docker build -t example/recommendation:v1 .
+
+docker images | grep recommendation
+
+oc apply -f <(istioctl kube-inject -f src/main/kubernetes/Deployment.yml) -n tutorial
+
+oc create -f src/main/kubernetes/Service.yml
+
+oc get pods -w
+
+curl customer-tutorial.$(minishift ip).nip.io
+```
+
+it returns
+
+```bash
+customer => preference => recommendation v1 from '99634814-sf4cl': 1
+```
+
+and you can monitor the recommendation logs with
+
+```bash
+stern recommendation -c recommendation
+```
+
+Back to the main istio-tutorial directory
+
+```bash
+cd ..
+```
+
+#### Updating redeploying code
+
+When you wish to change code (e.g. editing the .java files) and wish to "redeploy", simply:
+
+```bash
+cd {servicename}
+
+vi src/main/java/com/redhat/developer/demos/{servicename}/{Servicename}{Controller|Verticle}.java
+```
+
+Make your edits and esc-w-q
+
+```bash
+mvn clean package
+docker build -t example/{servicename} .
+
+oc get pods -o jsonpath='{.items[*].metadata.name}' -l app={servicename}
+oc get pods -o jsonpath='{.items[*].metadata.name}' -l app={servicename},version=v1
+
+oc delete pod -l app={servicename},version=v1
+```
+
+Why the delete pod?
+
+Based on the Deployment configuration, Kubernetes/OpenShift will recreate the pod, based on the new docker image as it attempts to keep the desired replicas available
+
+```bash
+oc describe deployment {servicename} | grep Replicas
+```
 
 ### 2 - Monitoring
 
@@ -159,9 +382,9 @@ and
 
 https://github.com/jchraibi/istio-tutorial/blob/master/customer/src/main/java/com/redhat/developer/demos/customer/CustomerApplication.java#L21-L31
 
-### 4 - Route rules 101 (JCH)
+### 4 - Route rules 101
 
-### 5 - Smart Routing (JCH + LBR)
+### 5 - Smart Routing
 
 ### 6 - SLA and Error handling
 
@@ -942,307 +1165,6 @@ https://github.com/snowdrop/spring-boot-quickstart-istio/blob/master/TROUBLESHOO
     * [Test behavior with failing instance and without pool ejection](#test-behavior-with-failing-instance-and-without-pool-ejection)
     * [Test behavior with failing instance and with pool ejection](#test-behavior-with-failing-instance-and-with-pool-ejection)
   * [Ultimate resilience with retries, circuit breaker, and pool ejection](#ultimate-resilience-with-retries-circuit-breaker-and-pool-ejection)
-    * [Clean up](#clean-up)
-* [Egress](#egress)
-    * [Create HTTPBin Java App](#create-httpbin-java-app)
-    * [Create the Github Java App](#create-the-github-java-app)
-    * [Istio-ize Egress](#istio-ize-egress)
-* [Tips & Tricks](#tips-tricks)
-
-<!-- toc stop -->
-
-
-
-## Prerequisite CLI tools
-You will need in this tutorial
-* minishift (https://github.com/minishift/minishift/releases)
-* docker (https://www.docker.com/docker-mac)
-* kubectl (https://kubernetes.io/docs/tasks/tools/install-kubectl/#install-kubectl-binary-via-curl)
-* oc (eval $(minishift oc-env))
-* mvn (https://archive.apache.org/dist/maven/maven-3/3.3.9/binaries/apache-maven-3.3.9-bin.tar.gz)
-* stern (brew install stern)
-* istioctl (will be installed via the steps below)
-* curl, gunzip, tar are built-in to MacOS or part of your bash shell
-* git (everybody needs the git CLI)
-
-## Setup minishift
-Assumes minishift, tested with minishift v1.12.0+daa0943
-
-Minishift creation script
-```bash
-#!/bin/bash
-
-# add the location of minishift execuatable to PATH
-# I also keep other handy tools like kubectl and kubetail.sh
-# in that directory
-
-export MINISHIFT_HOME=~/minishift_1.13.1
-export PATH=$MINISHIFT_HOME:$PATH
-
-minishift profile set tutorial
-minishift config set memory 8GB
-minishift config set cpus 3
-minishift config set vm-driver virtualbox
-minishift config set image-caching true
-minishift addon enable admin-user
-
-minishift start
-```
-
-## Setup environment
-
-```bash
-eval $(minishift oc-env)
-eval $(minishift docker-env)
-oc login $(minishift ip):8443 -u admin -p admin
-```
-
-Note: In this tutorial, you will often be polling the customer endpoint with curl, while simultaneously viewing logs via stern or kubetail.sh and issuing commands via oc and istioctl.  Consider using three terminal windows.
-
-
-
-
-
-## Deploy customer
-
-Make sure you have are logged in
-
-```bash
-oc whoami
-```
-
-and you have setup the project/namespace
-
-```bash
-oc new-project tutorial
-oc adm policy add-scc-to-user privileged -z default -n tutorial
-```
-
-Then clone the git repository
-
-```bash
-git clone https://github.com/redhat-developer-demos/istio-tutorial
-cd istio-tutorial
-```
-
- Start deploying the microservice projects, starting with customer
-
-```bash
-cd customer
-
-mvn clean package
-
-docker build -t example/customer .
-
-docker images | grep customer
-```
-
-Note: Your very first docker build will take a bit of time as it downloads all the layers.  Subsequent rebuilds of the docker image, updating only the jar/app layer will be very fast.
-
-Add *istioctl* to your $PATH, you downloaded it a few steps back.  An example
-
-```bash
-export ISTIO_HOME=~/istio-0.6.0
-export PATH=$ISTIO_HOME/bin:$PATH
-
-istioctl version
-
-Version: 0.6.0
-GitRevision: 2cb09cdf040a8573330a127947b11e5082619895
-User: root@a28f609ab931
-Hub: docker.io/istio
-GolangVersion: go1.9
-BuildStatus: Clean
-```
-
-Now let's deploy the customer pod with its sidecar
-
-```bash
-oc apply -f <(istioctl kube-inject -f src/main/kubernetes/Deployment.yml) -n tutorial
-
-oc create -f src/main/kubernetes/Service.yml -n tutorial
-```
-
-Since customer is the forward most microservice (customer -> preference -> recommendation), let's add an OpenShift Route that exposes that endpoint.
-
-```bash
-oc expose service customer
-
-oc get route
-
-oc get pods -w
-```
-
-Waiting for Ready 2/2, to break out of the waiting use "ctrl-c"
-
-Then test the customer endpoint
-
-```bash
-curl customer-tutorial.$(minishift ip).nip.io
-```
-
-You should see the following error because preference and recommendation are not yet deployed.
-
-```bash
-customer => I/O error on GET request for "http://preference:8080": preference; nested exception is java.net.UnknownHostException: preference
-```
-
-Also review the logs
-
-```bash
-stern customer -c customer
-```
-
-You should see a stacktrace containing this cause:
-
-```bash
-org.springframework.web.client.ResourceAccessException: I/O error on GET request for "http://preference:8080": preference; nested exception is java.net.UnknownHostException: preference
-```
-
-Back to the main istio-tutorial directory
-
-```bash
-cd ..
-```
-
-## Deploy preference
-
-```bash
-cd preference
-
-mvn clean package
-
-docker build -t example/preference .
-
-docker images | grep preference
-
-oc apply -f <(istioctl kube-inject -f src/main/kubernetes/Deployment.yml) -n tutorial
-
-oc create -f src/main/kubernetes/Service.yml
-
-oc get pods -w
-```
-
-Wait for the Ready 2/2
-
-```bash
-curl customer-tutorial.$(minishift ip).nip.io
-```
-
-It will respond with an error since recommendation is not yet deployed.
-Note: We could make this a bit more resilent in a future iteration of this tutorial
-
-```bash
-customer => 503 preference => I/O error on GET request for "http://recommendation:8080": recommendation; nested exception is java.net.UnknownHostException: recommendation
-```
-
-and check out the logs
-
-```bash
-stern preference -c preference
-```
-
-You should see a stacktrace containing this cause:
-
-```bash
-org.springframework.web.client.ResourceAccessException: I/O error on GET request for "http://recommendation:8080": recommendation; nested exception is java.net.UnknownHostException: recommendation
-```
-
-Back to the main istio-tutorial directory
-
-```bash
-cd ..
-```
-
-## Deploy recommendation
-
-Note: The tag "v1" at the end of the image name is important.  We will be creating a v2 version of recommendation later in this tutorial.   Having both a v1 and v2 version of the recommendation code will allow us to exercise some interesting aspects of Istio's capabilities.
-
-```bash
-cd recommendation
-
-mvn clean package
-
-docker build -t example/recommendation:v1 .
-
-docker images | grep recommendation
-
-oc apply -f <(istioctl kube-inject -f src/main/kubernetes/Deployment.yml) -n tutorial
-
-oc create -f src/main/kubernetes/Service.yml
-
-oc get pods -w
-
-curl customer-tutorial.$(minishift ip).nip.io
-```
-
-it returns
-
-```bash
-customer => preference => recommendation v1 from '99634814-sf4cl': 1
-```
-
-and you can monitor the recommendation logs with
-
-```bash
-stern recommendation -c recommendation
-```
-
-Back to the main istio-tutorial directory
-
-```bash
-cd ..
-```
-
-## Updating Redeploying Code
-
-When you wish to change code (e.g. editing the .java files) and wish to "redeploy", simply:
-
-```bash
-cd {servicename}
-
-vi src/main/java/com/redhat/developer/demos/{servicename}/{Servicename}{Controller|Verticle}.java
-```
-
-Make your edits and esc-w-q
-
-```bash
-mvn clean package
-docker build -t example/{servicename} .
-
-oc get pods -o jsonpath='{.items[*].metadata.name}' -l app={servicename}
-oc get pods -o jsonpath='{.items[*].metadata.name}' -l app={servicename},version=v1
-
-oc delete pod -l app={servicename},version=v1
-```
-
-Why the delete pod?
-
-Based on the Deployment configuration, Kubernetes/OpenShift will recreate the pod, based on the new docker image as it attempts to keep the desired replicas available
-
-```bash
-oc describe deployment {servicename} | grep Replicas
-```
-
-## Monitoring
-
-Out of the box, you get monitoring via Prometheus and Grafana.  
-
-```bash
-open "$(minishift openshift service grafana -u)/d/1/istio-dashboard?refresh=5s&orgId=1"
-```
-
-![alt text](readme_images/grafana1.png "Grafana Istio Dashboard")
-
-Scroll-down to see the stats for customer, preference and recommendation
-
-![alt text](readme_images/grafana2.png "Customer Preferences")
-
-
-
-Note: you may have to refresh the browser for the Prometheus graph to update. And you may wish to make the interval 5m (5 minutes) as seen in the screenshot above.
-
-
 
 
 
