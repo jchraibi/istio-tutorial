@@ -383,9 +383,10 @@ and
 https://github.com/jchraibi/istio-tutorial/blob/master/customer/src/main/java/com/redhat/developer/demos/customer/CustomerApplication.java#L21-L31
 
 ### 4 - Route rules 101
-## Istio RouteRule Changes
 
-### recommendation:v2
+#### Istio RouteRule Changes
+
+#### recommendation:v2
 
 We can experiment with Istio routing rules by making a change to RecommendationVerticle.java like the following and creating a "v2" docker image.
 
@@ -477,7 +478,7 @@ and back to the main directory
 cd ..
 ```
 
-## Changing Istio RouteRules
+#### Changing Istio RouteRules
 
 #### All users to recommendation:v2
 
@@ -624,67 +625,8 @@ customer => preference => recommendation v2 from '2036617847-m9glz': 207
 customer => preference => recommendation v1 from '2039379827-h58vw': 130
 ```
 
-## Timeout
-
-
-
-```bash
-cd recommendation
-
-mvn clean package
-
-docker build -t example/recommendation:v2 .
-
-docker images | grep recommendation
-
-oc delete pod -l app=recommendation,version=v2 -n tutorial
-
-cd ..
-```
-
-Hit the customer endpoint a few times, to see the load-balancing between v1 and v2 but with v2 taking a bit of time to respond
-
-```bash
-#!/bin/bash
-while true
-do
-time curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-```
-
-Then add the timeout rule
-
-```bash
-istioctl create -f istiofiles/route-rule-recommendation-timeout.yml -n tutorial
-```
-
-You will see it return v1 OR "upstream request timeout" after waiting about 1 second
-
-```bash
-#!/bin/bash
-while true
-do
-time curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-
-customer => 503 preference => 504 upstream request timeout
-curl customer-tutorial.$(minishift ip).nip.io  0.01s user 0.00s system 0% cpu 1.035 total
-customer => preference => recommendation v1 from '2039379827-h58vw': 210
-curl customer-tutorial.$(minishift ip).nip.io  0.01s user 0.00s system 36% cpu 0.025 total
-customer => 503 preference => 504 upstream request timeout
-curl customer-tutorial.$(minishift ip).nip.io  0.01s user 0.00s system 0% cpu 1.034 total
-```
-
-Clean up, delete the timeout rule
-
-```bash
-istioctl delete routerule recommendation-timeout -n tutorial
-```
-
 ### 5 - Smart Routing
-## Smart routing based on user-agent header (Canary Deployment)
+### Smart routing based on user-agent header (Canary Deployment)
 
 What is your user-agent?
 
@@ -760,7 +702,7 @@ curl -A "Mozilla/5.0 (iPhone; U; CPU iPhone OS 4(KHTML, like Gecko) Version/5.0.
 istioctl delete routerule recommendation-mobile -n tutorial
 ```
 
-## Mirroring Traffic (Dark Launch)
+### Mirroring Traffic (Dark Launch)
 
 ```bash
 oc get pods -l app=recommendation -n tutorial
@@ -798,7 +740,7 @@ istioctl delete routerule recommendation-mirror -n tutorial
 
 
 
-## Load Balancer
+### Load Balancer
 
 By default, you will see "round-robin" style load-balancing, but you can change it up, with the RANDOM option being fairly visible to the naked eye.
 
@@ -883,7 +825,7 @@ istioctl delete -f istiofiles/recommendation_lb_policy_app.yml -n tutorial
 oc scale deployment recommendation-v2 --replicas=1 -n tutorial
 ```
 
-## Rate Limiting
+### Rate Limiting
 
 **Note**: currently not working
 
