@@ -1224,7 +1224,76 @@ Clean up
 istioctl delete -f istiofiles/recommendation_cb_policy_pool_ejection.yml -n tutorial
 ```
 
-### 8 - Ultimate resilience (JCH)
+### 8 - Ultimate resilience with retries, circuit breaker, and pool ejection
+
+Even with pool ejection your application doesn't *look* that resilient. That's probably because we're still letting some errors to be propagated to our clients. But we can improve this. If we have enough instances and/or versions of a specific service running into our system, we can combine multiple Istio capabilities to achieve the ultimate backend resilience:
+- **Circuit Breaker** to avoid multiple concurrent requests to an instance;
+- **Pool Ejection** to remove failing instances from the pool of responding instances;
+- **Retries** to forward the request to another instance just in case we get an open circuit breaker and/or pool ejection;
+
+By simply adding a **retry** configuration to our current `routerule`, we'll be able to get rid completely of our `503`s requests. This means that whenever we receive a failed request from an ejected instance, Istio will forward the request to another supposably healthy instance.
+
+```bash
+istioctl replace -f istiofiles/route-rule-recommendation-v1_and_v2_retry.yml
+```
+
+Throw some requests at the customer endpoint:
+
+```bash
+#!/bin/bash
+while true
+do curl customer-tutorial.$(minishift ip).nip.io
+sleep .1
+done
+```
+
+You won't receive `503`s anymore. But the requests from recommendation `v2` are still taking more time to get a response:
+
+```bash
+customer => preference => recommendation v1 from '2039379827-jmm6x': 538
+customer => preference => recommendation v1 from '2039379827-jmm6x': 539
+customer => preference => recommendation v1 from '2039379827-jmm6x': 540
+customer => preference => recommendation v2 from '2036617847-hdjv2': 281
+customer => preference => recommendation v1 from '2039379827-jmm6x': 541
+customer => preference => recommendation v2 from '2036617847-hdjv2': 282
+customer => preference => recommendation v1 from '2039379827-jmm6x': 542
+customer => preference => recommendation v1 from '2039379827-jmm6x': 543
+customer => preference => recommendation v1 from '2039379827-jmm6x': 544
+customer => preference => recommendation v2 from '2036617847-hdjv2': 283
+customer => preference => recommendation v2 from '2036617847-hdjv2': 284
+customer => preference => recommendation v1 from '2039379827-jmm6x': 545
+customer => preference => recommendation v1 from '2039379827-jmm6x': 546
+customer => preference => recommendation v1 from '2039379827-jmm6x': 547
+customer => preference => recommendation v2 from '2036617847-hdjv2': 285
+customer => preference => recommendation v2 from '2036617847-hdjv2': 286
+customer => preference => recommendation v1 from '2039379827-jmm6x': 548
+customer => preference => recommendation v2 from '2036617847-hdjv2': 287
+customer => preference => recommendation v2 from '2036617847-hdjv2': 288
+customer => preference => recommendation v1 from '2039379827-jmm6x': 549
+customer => preference => recommendation v2 from '2036617847-hdjv2': 289
+customer => preference => recommendation v2 from '2036617847-hdjv2': 290
+customer => preference => recommendation v2 from '2036617847-hdjv2': 291
+customer => preference => recommendation v2 from '2036617847-hdjv2': 292
+customer => preference => recommendation v1 from '2039379827-jmm6x': 550
+customer => preference => recommendation v1 from '2039379827-jmm6x': 551
+customer => preference => recommendation v1 from '2039379827-jmm6x': 552
+customer => preference => recommendation v1 from '2039379827-jmm6x': 553
+customer => preference => recommendation v2 from '2036617847-hdjv2': 293
+customer => preference => recommendation v2 from '2036617847-hdjv2': 294
+customer => preference => recommendation v1 from '2039379827-jmm6x': 554
+```
+
+Our misbehaving pod `recommendation-v2-2036617847-spdrb` never shows up in the console, thanks to pool ejection and retry.
+
+#### Clean up
+
+```bash
+oc scale deployment recommendation-v2 --replicas=1 -n tutorial
+oc delete pod -l app=recommendation,version=v2
+oc delete routerule recommendation-v1-v2 -n tutorial
+istioctl delete -f istiofiles/recommendation_cb_policy_pool_ejection.yml -n tutorial
+```
+
 
 ### 9 - Security
 
@@ -1628,81 +1697,3 @@ https://github.com/snowdrop/spring-boot-quickstart-istio/blob/master/TROUBLESHOO
   * [Ultimate resilience with retries, circuit breaker, and pool ejection](#ultimate-resilience-with-retries-circuit-breaker-and-pool-ejection)
 
 
-
-
-
-
-
-## Circuit Breaker
-
-
-
-### Ultimate resilience with retries, circuit breaker, and pool ejection
-
-Even with pool ejection your application doesn't *look* that resilient. That's probably because we're still letting some errors to be propagated to our clients. But we can improve this. If we have enough instances and/or versions of a specific service running into our system, we can combine multiple Istio capabilities to achieve the ultimate backend resilience:
-- **Circuit Breaker** to avoid multiple concurrent requests to an instance;
-- **Pool Ejection** to remove failing instances from the pool of responding instances;
-- **Retries** to forward the request to another instance just in case we get an open circuit breaker and/or pool ejection;
-
-By simply adding a **retry** configuration to our current `routerule`, we'll be able to get rid completely of our `503`s requests. This means that whenever we receive a failed request from an ejected instance, Istio will forward the request to another supposably healthy instance.
-
-```bash
-istioctl replace -f istiofiles/route-rule-recommendation-v1_and_v2_retry.yml
-```
-
-Throw some requests at the customer endpoint:
-
-```bash
-#!/bin/bash
-while true
-do curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-```
-
-You won't receive `503`s anymore. But the requests from recommendation `v2` are still taking more time to get a response:
-
-```bash
-customer => preference => recommendation v1 from '2039379827-jmm6x': 538
-customer => preference => recommendation v1 from '2039379827-jmm6x': 539
-customer => preference => recommendation v1 from '2039379827-jmm6x': 540
-customer => preference => recommendation v2 from '2036617847-hdjv2': 281
-customer => preference => recommendation v1 from '2039379827-jmm6x': 541
-customer => preference => recommendation v2 from '2036617847-hdjv2': 282
-customer => preference => recommendation v1 from '2039379827-jmm6x': 542
-customer => preference => recommendation v1 from '2039379827-jmm6x': 543
-customer => preference => recommendation v1 from '2039379827-jmm6x': 544
-customer => preference => recommendation v2 from '2036617847-hdjv2': 283
-customer => preference => recommendation v2 from '2036617847-hdjv2': 284
-customer => preference => recommendation v1 from '2039379827-jmm6x': 545
-customer => preference => recommendation v1 from '2039379827-jmm6x': 546
-customer => preference => recommendation v1 from '2039379827-jmm6x': 547
-customer => preference => recommendation v2 from '2036617847-hdjv2': 285
-customer => preference => recommendation v2 from '2036617847-hdjv2': 286
-customer => preference => recommendation v1 from '2039379827-jmm6x': 548
-customer => preference => recommendation v2 from '2036617847-hdjv2': 287
-customer => preference => recommendation v2 from '2036617847-hdjv2': 288
-customer => preference => recommendation v1 from '2039379827-jmm6x': 549
-customer => preference => recommendation v2 from '2036617847-hdjv2': 289
-customer => preference => recommendation v2 from '2036617847-hdjv2': 290
-customer => preference => recommendation v2 from '2036617847-hdjv2': 291
-customer => preference => recommendation v2 from '2036617847-hdjv2': 292
-customer => preference => recommendation v1 from '2039379827-jmm6x': 550
-customer => preference => recommendation v1 from '2039379827-jmm6x': 551
-customer => preference => recommendation v1 from '2039379827-jmm6x': 552
-customer => preference => recommendation v1 from '2039379827-jmm6x': 553
-customer => preference => recommendation v2 from '2036617847-hdjv2': 293
-customer => preference => recommendation v2 from '2036617847-hdjv2': 294
-customer => preference => recommendation v1 from '2039379827-jmm6x': 554
-```
-
-Our misbehaving pod `recommendation-v2-2036617847-spdrb` never shows up in the console, thanks to pool ejection and retry.
-
-#### Clean up
-
-```bash
-oc scale deployment recommendation-v2 --replicas=1 -n tutorial
-oc delete pod -l app=recommendation,version=v2
-oc delete routerule recommendation-v1-v2 -n tutorial
-istioctl delete -f istiofiles/recommendation_cb_policy_pool_ejection.yml -n tutorial
-```
