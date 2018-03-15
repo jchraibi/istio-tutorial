@@ -557,73 +557,39 @@ Clean up
 istioctl delete routerule recommendation-v1-v2 -n tutorial
 ```
 
-#
+### Defining Rules precedence
+The `precedence` of the routing rules matters. The higher the value of precedence, that rule takes higher precedence.
+Let's look at these 2 route rules:
 
-Now add the retry rule
-
-```bash
-istioctl create -f istiofiles/route-rule-recommendation-v2_retry.yml -n tutorial
+```
+apiVersion: config.istio.io/v1alpha2
+kind: RouteRule
+metadata:
+  name: routerule_v1
+spec:
+  destination:
+    name: some_service_v1
+  precedence: 2
+  route:
+  - labels:
+      version: v1
 ```
 
-and after a few seconds, things will settle down and you will see it work every time
-
-```bash
-#!/bin/bash
-while true
-do
-curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-
-customer => preference => recommendation v2 from '2036617847-m9glz': 196
-customer => preference => recommendation v2 from '2036617847-m9glz': 197
-customer => preference => recommendation v2 from '2036617847-m9glz': 198
 ```
-
-You can see the active RouteRules via
-
-```bash
-istioctl get routerules -n tutorial
+apiVersion: config.istio.io/v1alpha2
+kind: RouteRule
+metadata:
+  name: routerule_v2
+spec:
+  destination:
+    name: some_service_v2
+  precedence: 3
+  route:
+  - labels:
+      version: v2
 ```
+In this case, if both route rules are applied, the traffic will always be redirected to v2 because it has a precedence of 3 which is higher than precendence:2 of routerule_v1.
 
-Now, delete the retry rule and see the old behavior, some random 503s
-
-```bash
-istioctl delete routerule recommendation-v2-retry -n tutorial
-
-while true
-do
-curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-
-customer => preference => recommendation v2 from '2036617847-m9glz': 190
-customer => preference => recommendation v2 from '2036617847-m9glz': 191
-customer => preference => recommendation v2 from '2036617847-m9glz': 192
-customer => 503 preference => 503 fault filter abort
-customer => preference => recommendation v2 from '2036617847-m9glz': 193
-customer => 503 preference => 503 fault filter abort
-customer => preference => recommendation v2 from '2036617847-m9glz': 194
-customer => 503 preference => 503 fault filter abort
-customer => preference => recommendation v2 from '2036617847-m9glz': 195
-customer => 503 preference => 503 fault filter abort
-```
-```
-
-Now, delete the 503 rule and back to random load-balancing between v1 and v2
-
-```bash
-istioctl delete routerule recommendation-v2-503 -n tutorial
-
-while true
-do
-curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-customer => preference => recommendation v1 from '2039379827-h58vw': 129
-customer => preference => recommendation v2 from '2036617847-m9glz': 207
-customer => preference => recommendation v1 from '2039379827-h58vw': 130
-```
 
 ### 5 - Smart Routing
 ### Smart routing based on user-agent header (Canary Deployment)
