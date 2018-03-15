@@ -20,7 +20,7 @@ a missing dependent service, it just returns the error message to the end-user.
     * [Updating redeploying code](#updating-redeploying-code)
   * [Monitoring](#monitoring)
   * [Distributed Tracing](#distributed-tracing)
-  * [Routes rules 101](#route-rules-101)
+  * [Routes rules 101](#4---route-rules-101)
   * [Smart routing](#smart-routing)
   * [SLA and Error handling](#sla-and-error-handling)
     * [Fault injection](#fault-injection)
