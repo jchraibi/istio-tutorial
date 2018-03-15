@@ -110,7 +110,7 @@ oc adm policy add-scc-to-user privileged -z default -n tutorial
 Then clone the git repository
 
 ```bash
-git clone https://github.com/redhat-developer-demos/istio-tutorial
+git clone https://github.com/jchraibi/istio-tutorial
 cd istio-tutorial
 ```
 
@@ -1642,6 +1642,3 @@ cat envoy-rev3.json
 Snowdrop Troubleshooting
 
 https://github.com/snowdrop/spring-boot-quickstart-istio/blob/master/TROUBLESHOOT.md
-
-
-
