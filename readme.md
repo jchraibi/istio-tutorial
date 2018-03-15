@@ -383,8 +383,561 @@ and
 https://github.com/jchraibi/istio-tutorial/blob/master/customer/src/main/java/com/redhat/developer/demos/customer/CustomerApplication.java#L21-L31
 
 ### 4 - Route rules 101
+## Istio RouteRule Changes
+
+### recommendation:v2
+
+We can experiment with Istio routing rules by making a change to RecommendationVerticle.java like the following and creating a "v2" docker image.
+
+```java
+    private static final String RESPONSE_STRING_FORMAT = "recommendation v2 from '%s': %d\n";
+```
+
+The "v2" tag during the docker build is significant.
+
+There is also a 2nd deployment.yml file to label things correctly
+
+```bash
+cd recommendation
+
+mvn clean package
+
+docker build -t example/recommendation:v2 .
+
+docker images | grep recommendation
+example/recommendation                  v2                  c31e399a9628        5 seconds ago       438MB
+example/recommendation                  v1              f072978d9cf6        8 minutes ago      438MB
+```
+
+*Important:* We have a 2nd Deployment to manage the v2 version of recommendation.  
+
+```bash
+oc apply -f <(istioctl kube-inject -f src/main/kubernetes/Deployment-v2.yml) -n tutorial
+
+oc get pods -w
+```
+
+Wait for those pods to show "2/2", the istio-proxy/envoy sidecar is part of that pod
+
+```bash
+NAME                                  READY     STATUS    RESTARTS   AGE
+customer-3600192384-fpljb             2/2       Running   0          17m
+preference-243057078-8c5hz           2/2       Running   0          15m
+recommendation-v1-60483540-9snd9     2/2       Running   0          12m
+recommendation-v2-2815683430-vpx4p   2/2       Running   0         15s
+```
+
+and test the customer endpoint
+
+```bash
+curl customer-tutorial.$(minishift ip).nip.io
+```
+
+you likely see "customer => preference => recommendation v1 from '99634814-d2z2t': 3", where '99634814-d2z2t' is the pod running v1 and the 3 is basically the number of times you hit the endpoint.
+
+```
+curl customer-tutorial.$(minishift ip).nip.io
+```
+
+you likely see "customer => preference => recommendation v2 from '2819441432-5v22s': 1" as by default you get round-robin load-balancing when there is more than one Pod behind a Service
+
+Send several requests to see their responses
+
+```bash
+#!/bin/bash
+while true
+do curl customer-tutorial.$(minishift ip).nip.io
+sleep .1
+done
+```
+
+The default Kubernetes/OpenShift behavior is to round-robin load-balance across all available pods behind a single Service.  Add another replica of recommendation-v2 Deployment.
+
+```bash
+oc scale --replicas=2 deployment/recommendation-v2
+```
+
+Now, you will see two requests into the v2 and one for v1.
+
+```bash
+customer => preference => recommendation v1 from '2819441432-qsp25': 29
+customer => preference => recommendation v2 from '99634814-sf4cl': 37
+customer => preference => recommendation v2 from '99634814-sf4cl': 38
+```
+
+Scale back to a single replica of the recommendation-v2 Deployment
+
+```bash
+oc scale --replicas=1 deployment/recommendation-v2
+```
+
+and back to the main directory
+
+```bash
+cd ..
+```
+
+## Changing Istio RouteRules
+
+#### All users to recommendation:v2
+
+From the main istio-tutorial directory,
+
+```bash
+istioctl create -f istiofiles/route-rule-recommendation-v2.yml -n tutorial
+
+curl customer-tutorial.$(minishift ip).nip.io
+```
+
+you should only see v2 being returned
+
+#### All users to recommendation:v1
+
+Note: "replace" instead of "create" since we are overlaying the previous rule
+
+```bash
+istioctl replace -f istiofiles/route-rule-recommendation-v1.yml -n tutorial
+
+istioctl get routerules -n tutorial
+
+istioctl get routerule recommendation-default -o yaml -n tutorial
+```
+
+#### All users to recommendation v1 and v2
+
+By simply removing the rule
+
+```bash
+istioctl delete routerule recommendation-default -n tutorial
+```
+
+and you should see the default behavior of load-balancing between v1 and v2
+
+```bash
+curl customer-tutorial.$(minishift ip).nip.io
+```
+
+#### Split traffic between v1 and v2
+
+Canary Deployment scenario: push v2 into the cluster but slowly send end-user traffic to it, if you continue to see success, continue shifting more traffic over time
+
+```bash
+oc get pods -l app=recommendation -n tutorial
+NAME                                  READY     STATUS    RESTARTS   AGE
+recommendation-v1-3719512284-7mlzw   2/2       Running   6          2h
+recommendation-v2-2815683430-vn77w   2/2       Running   0          1h
+```
+
+Create the routerule that will send 90% of requests to v1 and 10% to v2
+
+```bash
+istioctl create -f istiofiles/route-rule-recommendation-v1_and_v2.yml -n tutorial
+```
+
+and send in several requests
+
+```bash
+#!/bin/bash
+while true
+do curl customer-tutorial.$(minishift ip).nip.io
+sleep .1
+done
+```
+
+In another terminal, change the mixture to be 75/25
+
+```bash
+istioctl replace -f istiofiles/route-rule-recommendation-v1_and_v2_75_25.yml -n tutorial
+```
+
+Clean up
+
+```bash
+istioctl delete routerule recommendation-v1-v2 -n tutorial
+```
+
+#
+
+Now add the retry rule
+
+```bash
+istioctl create -f istiofiles/route-rule-recommendation-v2_retry.yml -n tutorial
+```
+
+and after a few seconds, things will settle down and you will see it work every time
+
+```bash
+#!/bin/bash
+while true
+do
+curl customer-tutorial.$(minishift ip).nip.io
+sleep .1
+done
+
+customer => preference => recommendation v2 from '2036617847-m9glz': 196
+customer => preference => recommendation v2 from '2036617847-m9glz': 197
+customer => preference => recommendation v2 from '2036617847-m9glz': 198
+```
+
+You can see the active RouteRules via
+
+```bash
+istioctl get routerules -n tutorial
+```
+
+Now, delete the retry rule and see the old behavior, some random 503s
+
+```bash
+istioctl delete routerule recommendation-v2-retry -n tutorial
+
+while true
+do
+curl customer-tutorial.$(minishift ip).nip.io
+sleep .1
+done
+
+customer => preference => recommendation v2 from '2036617847-m9glz': 190
+customer => preference => recommendation v2 from '2036617847-m9glz': 191
+customer => preference => recommendation v2 from '2036617847-m9glz': 192
+customer => 503 preference => 503 fault filter abort
+customer => preference => recommendation v2 from '2036617847-m9glz': 193
+customer => 503 preference => 503 fault filter abort
+customer => preference => recommendation v2 from '2036617847-m9glz': 194
+customer => 503 preference => 503 fault filter abort
+customer => preference => recommendation v2 from '2036617847-m9glz': 195
+customer => 503 preference => 503 fault filter abort
+```
+```
+
+Now, delete the 503 rule and back to random load-balancing between v1 and v2
+
+```bash
+istioctl delete routerule recommendation-v2-503 -n tutorial
+
+while true
+do
+curl customer-tutorial.$(minishift ip).nip.io
+sleep .1
+done
+customer => preference => recommendation v1 from '2039379827-h58vw': 129
+customer => preference => recommendation v2 from '2036617847-m9glz': 207
+customer => preference => recommendation v1 from '2039379827-h58vw': 130
+```
+
+## Timeout
+
+
+
+```bash
+cd recommendation
+
+mvn clean package
+
+docker build -t example/recommendation:v2 .
+
+docker images | grep recommendation
+
+oc delete pod -l app=recommendation,version=v2 -n tutorial
+
+cd ..
+```
+
+Hit the customer endpoint a few times, to see the load-balancing between v1 and v2 but with v2 taking a bit of time to respond
+
+```bash
+#!/bin/bash
+while true
+do
+time curl customer-tutorial.$(minishift ip).nip.io
+sleep .1
+done
+```
+
+Then add the timeout rule
+
+```bash
+istioctl create -f istiofiles/route-rule-recommendation-timeout.yml -n tutorial
+```
+
+You will see it return v1 OR "upstream request timeout" after waiting about 1 second
+
+```bash
+#!/bin/bash
+while true
+do
+time curl customer-tutorial.$(minishift ip).nip.io
+sleep .1
+done
+
+customer => 503 preference => 504 upstream request timeout
+curl customer-tutorial.$(minishift ip).nip.io  0.01s user 0.00s system 0% cpu 1.035 total
+customer => preference => recommendation v1 from '2039379827-h58vw': 210
+curl customer-tutorial.$(minishift ip).nip.io  0.01s user 0.00s system 36% cpu 0.025 total
+customer => 503 preference => 504 upstream request timeout
+curl customer-tutorial.$(minishift ip).nip.io  0.01s user 0.00s system 0% cpu 1.034 total
+```
+
+Clean up, delete the timeout rule
+
+```bash
+istioctl delete routerule recommendation-timeout -n tutorial
+```
 
 ### 5 - Smart Routing
+## Smart routing based on user-agent header (Canary Deployment)
+
+What is your user-agent?
+
+https://www.whoishostingthis.com/tools/user-agent/
+
+Note: the "user-agent" header being forwarded in the Customer and Preferences controllers in order for route rule modications around recommendation
+
+#### Set recommendation to all v1
+
+```bash
+istioctl create -f istiofiles/route-rule-recommendation-v1.yml -n tutorial
+```
+
+#### Set Safari users to v2
+
+```bash
+istioctl create -f istiofiles/route-rule-safari-recommendation-v2.yml -n tutorial
+
+istioctl get routerules -n tutorial
+```
+
+and test with a Safari (or even Chrome on Mac since it includes Safari in the string).  Safari only sees v2 responses from recommendation
+
+and test with a Firefox browser, it should only see v1 responses from recommendation.
+
+There are two ways to get the URL for your browser:
+
+```bash
+minishift openshift service customer --in-browser
+```
+
+That will open the openshift service `customer` in browser
+
+Or
+
+if you need just the url alone:
+
+```bash
+minishift openshift service customer --url
+http://customer-tutorial.192.168.99.102.nip.io
+```
+
+You can also attempt to use the curl -A command to test with different user-agent strings.  
+
+```bash
+curl -A Safari customer-tutorial.$(minishift ip).nip.io
+curl -A Firefox customer-tutorial.$(minishift ip).nip.io
+```
+
+You can describe the routerule to see its configuration
+
+```bash
+oc describe routerule recommendation-safari -n tutorial
+```
+
+Remove the Safari rule
+
+```bash
+istioctl delete routerule recommendation-safari -n tutorial
+```
+
+#### Set mobile users to v2
+
+```bash
+istioctl create -f istiofiles/route-rule-mobile-recommendation-v2.yml -n tutorial
+
+curl -A "Mozilla/5.0 (iPhone; U; CPU iPhone OS 4(KHTML, like Gecko) Version/5.0.2 Mobile/8J2 Safari/6533.18.5" curl -A Safari customer-tutorial.$(minishift ip).nip.io
+```
+
+#### Clean up
+
+```bash
+istioctl delete routerule recommendation-mobile -n tutorial
+```
+
+## Mirroring Traffic (Dark Launch)
+
+```bash
+oc get pods -l app=recommendation -n tutorial
+```
+
+You should have 2 pods for recommendation based on the steps above
+
+```bash
+istioctl get routerules -n tutorial
+```
+
+You should have NO routerules
+if so "istioctl delete routerule rulename -n tutorial"
+
+Make sure you are in the main directory of "istio-tutorial"
+
+```bash
+istioctl create -f istiofiles/route-rule-recommendation-v1-mirror-v2.yml -n tutorial
+
+curl customer-tutorial.$(minishift ip).nip.io
+```
+
+Check the logs of recommendation-v2
+
+```bash
+oc logs -f `oc get pods|grep recommendation-v2|awk '{ print $1 }'` -c recommendation
+```
+
+
+#### Clean up
+
+```bash
+istioctl delete routerule recommendation-mirror -n tutorial
+```
+
+
+
+## Load Balancer
+
+By default, you will see "round-robin" style load-balancing, but you can change it up, with the RANDOM option being fairly visible to the naked eye.
+
+Add another v2 pod to the mix
+
+```bash
+oc scale deployment recommendation-v2 --replicas=2 -n tutorial
+```
+
+Wait a bit (oc get pods -w to watch)
+and curl the customer endpoint many times
+
+```bash
+curl customer-tutorial.$(minishift ip).nip.io
+```
+
+Add a 3rd v2 pod to the mix
+
+```bash
+oc scale deployment recommendation-v2 --replicas=3 -n tutorial
+
+oc get pods -n tutorial
+NAME                                  READY     STATUS    RESTARTS   AGE
+customer-1755156816-cjd2z             2/2       Running   0          1h
+preference-3336288630-2cc6f          2/2       Running   0          1h
+recommendation-v1-3719512284-bn42p   2/2       Running   0          59m
+recommendation-v2-2815683430-97nnf   2/2       Running   0          43m
+recommendation-v2-2815683430-d49n6   2/2       Running   0          51m
+recommendation-v2-2815683430-tptf2   2/2       Running   0          33m
+```
+
+Wait for those 2/2 (two containers in each pod) and then poll the customer endpoint
+
+```bash
+#!/bin/bash
+while true
+do curl customer-tutorial.$(minishift ip).nip.io
+sleep .1
+done
+```
+
+The results should follow a fairly normal round-robin distribution pattern
+
+```bash
+customer => preference => recommendation v1 from '99634814-d2z2t': 1145
+customer => preference => recommendation v2 from '2819441432-525lh': 1
+customer => preference => recommendation v2 from '2819441432-rg45q': 2
+customer => preference => recommendation v2 from '2819441432-bs5ck': 181
+customer => preference => recommendation v1 from '99634814-d2z2t': 1146
+customer => preference => recommendation v2 from '2819441432-rg45q': 3
+customer => preference => recommendation v2 from '2819441432-rg45q': 4
+customer => preference => recommendation v2 from '2819441432-bs5ck': 182
+```
+
+Now, add the Random LB DestinationPolicy
+
+```bash
+istioctl create -f istiofiles/recommendation_lb_policy_app.yml -n tutorial
+```
+
+And you should see a different pattern of which pod is being selected
+
+```bash
+customer => preference => recommendation v2 from '2819441432-rg45q': 10
+customer => preference => recommendation v2 from '2819441432-525lh': 3
+customer => preference => recommendation v2 from '2819441432-rg45q': 11
+customer => preference => recommendation v1 from '99634814-d2z2t': 1153
+customer => preference => recommendation v1 from '99634814-d2z2t': 1154
+customer => preference => recommendation v1 from '99634814-d2z2t': 1155
+customer => preference => recommendation v2 from '2819441432-rg45q': 12
+customer => preference => recommendation v2 from '2819441432-525lh': 4
+customer => preference => recommendation v2 from '2819441432-525lh': 5
+customer => preference => recommendation v2 from '2819441432-rg45q': 13
+customer => preference => recommendation v2 from '2819441432-rg45q': 14
+```
+
+Clean up
+
+```bash
+istioctl delete -f istiofiles/recommendation_lb_policy_app.yml -n tutorial
+
+oc scale deployment recommendation-v2 --replicas=1 -n tutorial
+```
+
+## Rate Limiting
+
+**Note**: currently not working
+
+Here we will limit the number of concurrent requests into recommendation v2
+
+Now apply the rate limit handler
+
+```bash
+istioctl create -f istiofiles/recommendation_rate_limit_handler.yml
+```
+
+Now setup the requestcount quota
+
+```bash
+istioctl create -f istiofiles/rate_limit_rule.yml
+```
+
+Throw some requests at customer
+
+```bash
+#!/bin/bash
+while true
+do curl customer-tutorial.$(minishift ip).nip.io
+sleep .1
+done
+```
+
+You should see some 429 errors:
+
+```bash
+customer => preference => recommendation v2 from '2819441432-f4ls5': 108
+customer => preference => recommendation v1 from '99634814-d2z2t': 1932
+customer => preference => recommendation v2 from '2819441432-f4ls5': 109
+customer => preference => recommendation v1 from '99634814-d2z2t': 1933
+customer => 503 preference => 429 Too Many Requests
+customer => preference => recommendation v1 from '99634814-d2z2t': 1934
+customer => preference => recommendation v2 from '2819441432-f4ls5': 110
+customer => preference => recommendation v1 from '99634814-d2z2t': 1935
+customer => 503 preference => 429 Too Many Requests
+customer => preference => recommendation v1 from '99634814-d2z2t': 1936
+customer => preference => recommendation v2 from '2819441432-f4ls5': 111
+customer => preference => recommendation v1 from '99634814-d2z2t': 1937
+customer => 503 preference => 429 Too Many Requests
+customer => preference => recommendation v1 from '99634814-d2z2t': 1938
+customer => preference => recommendation v2 from '2819441432-f4ls5': 112
+```
+
+Clean up
+
+```bash
+istioctl delete -f istiofiles/rate_limit_rule.yml
+
+istioctl delete -f istiofiles/recommendation_rate_limit_handler.yml
+```
 
 ### 6 - SLA and Error handling
 
@@ -1168,560 +1721,9 @@ https://github.com/snowdrop/spring-boot-quickstart-istio/blob/master/TROUBLESHOO
 
 
 
-## Istio RouteRule Changes
 
-### recommendation:v2
 
-We can experiment with Istio routing rules by making a change to RecommendationVerticle.java like the following and creating a "v2" docker image.
 
-```java
-    private static final String RESPONSE_STRING_FORMAT = "recommendation v2 from '%s': %d\n";
-```
-
-The "v2" tag during the docker build is significant.
-
-There is also a 2nd deployment.yml file to label things correctly
-
-```bash
-cd recommendation
-
-mvn clean package
-
-docker build -t example/recommendation:v2 .
-
-docker images | grep recommendation
-example/recommendation                  v2                  c31e399a9628        5 seconds ago       438MB
-example/recommendation                  v1              f072978d9cf6        8 minutes ago      438MB
-```
-
-*Important:* We have a 2nd Deployment to manage the v2 version of recommendation.  
-
-```bash
-oc apply -f <(istioctl kube-inject -f src/main/kubernetes/Deployment-v2.yml) -n tutorial
-
-oc get pods -w
-```
-
-Wait for those pods to show "2/2", the istio-proxy/envoy sidecar is part of that pod
-
-```bash
-NAME                                  READY     STATUS    RESTARTS   AGE
-customer-3600192384-fpljb             2/2       Running   0          17m
-preference-243057078-8c5hz           2/2       Running   0          15m
-recommendation-v1-60483540-9snd9     2/2       Running   0          12m
-recommendation-v2-2815683430-vpx4p   2/2       Running   0         15s
-```
-
-and test the customer endpoint
-
-```bash
-curl customer-tutorial.$(minishift ip).nip.io
-```
-
-you likely see "customer => preference => recommendation v1 from '99634814-d2z2t': 3", where '99634814-d2z2t' is the pod running v1 and the 3 is basically the number of times you hit the endpoint.
-
-```
-curl customer-tutorial.$(minishift ip).nip.io
-```
-
-you likely see "customer => preference => recommendation v2 from '2819441432-5v22s': 1" as by default you get round-robin load-balancing when there is more than one Pod behind a Service
-
-Send several requests to see their responses
-
-```bash
-#!/bin/bash
-while true
-do curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-```
-
-The default Kubernetes/OpenShift behavior is to round-robin load-balance across all available pods behind a single Service.  Add another replica of recommendation-v2 Deployment.
-
-```bash
-oc scale --replicas=2 deployment/recommendation-v2
-```
-
-Now, you will see two requests into the v2 and one for v1.
-
-```bash
-customer => preference => recommendation v1 from '2819441432-qsp25': 29
-customer => preference => recommendation v2 from '99634814-sf4cl': 37
-customer => preference => recommendation v2 from '99634814-sf4cl': 38
-```
-
-Scale back to a single replica of the recommendation-v2 Deployment
-
-```bash
-oc scale --replicas=1 deployment/recommendation-v2
-```
-
-and back to the main directory
-
-```bash
-cd ..
-```
-
-## Changing Istio RouteRules
-
-#### All users to recommendation:v2
-
-From the main istio-tutorial directory,
-
-```bash
-istioctl create -f istiofiles/route-rule-recommendation-v2.yml -n tutorial
-
-curl customer-tutorial.$(minishift ip).nip.io
-```
-
-you should only see v2 being returned
-
-#### All users to recommendation:v1
-
-Note: "replace" instead of "create" since we are overlaying the previous rule
-
-```bash
-istioctl replace -f istiofiles/route-rule-recommendation-v1.yml -n tutorial
-
-istioctl get routerules -n tutorial
-
-istioctl get routerule recommendation-default -o yaml -n tutorial
-```
-
-#### All users to recommendation v1 and v2
-
-By simply removing the rule
-
-```bash
-istioctl delete routerule recommendation-default -n tutorial
-```
-
-and you should see the default behavior of load-balancing between v1 and v2
-
-```bash
-curl customer-tutorial.$(minishift ip).nip.io
-```
-
-#### Split traffic between v1 and v2
-
-Canary Deployment scenario: push v2 into the cluster but slowly send end-user traffic to it, if you continue to see success, continue shifting more traffic over time
-
-```bash
-oc get pods -l app=recommendation -n tutorial
-NAME                                  READY     STATUS    RESTARTS   AGE
-recommendation-v1-3719512284-7mlzw   2/2       Running   6          2h
-recommendation-v2-2815683430-vn77w   2/2       Running   0          1h
-```
-
-Create the routerule that will send 90% of requests to v1 and 10% to v2
-
-```bash
-istioctl create -f istiofiles/route-rule-recommendation-v1_and_v2.yml -n tutorial
-```
-
-and send in several requests
-
-```bash
-#!/bin/bash
-while true
-do curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-```
-
-In another terminal, change the mixture to be 75/25
-
-```bash
-istioctl replace -f istiofiles/route-rule-recommendation-v1_and_v2_75_25.yml -n tutorial
-```
-
-Clean up
-
-```bash
-istioctl delete routerule recommendation-v1-v2 -n tutorial
-```
-
-#
-
-Now add the retry rule
-
-```bash
-istioctl create -f istiofiles/route-rule-recommendation-v2_retry.yml -n tutorial
-```
-
-and after a few seconds, things will settle down and you will see it work every time
-
-```bash
-#!/bin/bash
-while true
-do
-curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-
-customer => preference => recommendation v2 from '2036617847-m9glz': 196
-customer => preference => recommendation v2 from '2036617847-m9glz': 197
-customer => preference => recommendation v2 from '2036617847-m9glz': 198
-```
-
-You can see the active RouteRules via
-
-```bash
-istioctl get routerules -n tutorial
-```
-
-Now, delete the retry rule and see the old behavior, some random 503s
-
-```bash
-istioctl delete routerule recommendation-v2-retry -n tutorial
-
-while true
-do
-curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-
-customer => preference => recommendation v2 from '2036617847-m9glz': 190
-customer => preference => recommendation v2 from '2036617847-m9glz': 191
-customer => preference => recommendation v2 from '2036617847-m9glz': 192
-customer => 503 preference => 503 fault filter abort
-customer => preference => recommendation v2 from '2036617847-m9glz': 193
-customer => 503 preference => 503 fault filter abort
-customer => preference => recommendation v2 from '2036617847-m9glz': 194
-customer => 503 preference => 503 fault filter abort
-customer => preference => recommendation v2 from '2036617847-m9glz': 195
-customer => 503 preference => 503 fault filter abort
-```
-```
-
-Now, delete the 503 rule and back to random load-balancing between v1 and v2
-
-```bash
-istioctl delete routerule recommendation-v2-503 -n tutorial
-
-while true
-do
-curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-customer => preference => recommendation v1 from '2039379827-h58vw': 129
-customer => preference => recommendation v2 from '2036617847-m9glz': 207
-customer => preference => recommendation v1 from '2039379827-h58vw': 130
-```
-
-## Timeout
-
-
-
-```bash
-cd recommendation
-
-mvn clean package
-
-docker build -t example/recommendation:v2 .
-
-docker images | grep recommendation
-
-oc delete pod -l app=recommendation,version=v2 -n tutorial
-
-cd ..
-```
-
-Hit the customer endpoint a few times, to see the load-balancing between v1 and v2 but with v2 taking a bit of time to respond
-
-```bash
-#!/bin/bash
-while true
-do
-time curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-```
-
-Then add the timeout rule
-
-```bash
-istioctl create -f istiofiles/route-rule-recommendation-timeout.yml -n tutorial
-```
-
-You will see it return v1 OR "upstream request timeout" after waiting about 1 second
-
-```bash
-#!/bin/bash
-while true
-do
-time curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-
-customer => 503 preference => 504 upstream request timeout
-curl customer-tutorial.$(minishift ip).nip.io  0.01s user 0.00s system 0% cpu 1.035 total
-customer => preference => recommendation v1 from '2039379827-h58vw': 210
-curl customer-tutorial.$(minishift ip).nip.io  0.01s user 0.00s system 36% cpu 0.025 total
-customer => 503 preference => 504 upstream request timeout
-curl customer-tutorial.$(minishift ip).nip.io  0.01s user 0.00s system 0% cpu 1.034 total
-```
-
-Clean up, delete the timeout rule
-
-```bash
-istioctl delete routerule recommendation-timeout -n tutorial
-```
-
-## Smart routing based on user-agent header (Canary Deployment)
-
-What is your user-agent?
-
-https://www.whoishostingthis.com/tools/user-agent/
-
-Note: the "user-agent" header being forwarded in the Customer and Preferences controllers in order for route rule modications around recommendation
-
-#### Set recommendation to all v1
-
-```bash
-istioctl create -f istiofiles/route-rule-recommendation-v1.yml -n tutorial
-```
-
-#### Set Safari users to v2
-
-```bash
-istioctl create -f istiofiles/route-rule-safari-recommendation-v2.yml -n tutorial
-
-istioctl get routerules -n tutorial
-```
-
-and test with a Safari (or even Chrome on Mac since it includes Safari in the string).  Safari only sees v2 responses from recommendation
-
-and test with a Firefox browser, it should only see v1 responses from recommendation.
-
-There are two ways to get the URL for your browser:
-
-```bash
-minishift openshift service customer --in-browser
-```
-
-That will open the openshift service `customer` in browser
-
-Or
-
-if you need just the url alone:
-
-```bash
-minishift openshift service customer --url
-http://customer-tutorial.192.168.99.102.nip.io
-```
-
-You can also attempt to use the curl -A command to test with different user-agent strings.  
-
-```bash
-curl -A Safari customer-tutorial.$(minishift ip).nip.io
-curl -A Firefox customer-tutorial.$(minishift ip).nip.io
-```
-
-You can describe the routerule to see its configuration
-
-```bash
-oc describe routerule recommendation-safari -n tutorial
-```
-
-Remove the Safari rule
-
-```bash
-istioctl delete routerule recommendation-safari -n tutorial
-```
-
-#### Set mobile users to v2
-
-```bash
-istioctl create -f istiofiles/route-rule-mobile-recommendation-v2.yml -n tutorial
-
-curl -A "Mozilla/5.0 (iPhone; U; CPU iPhone OS 4(KHTML, like Gecko) Version/5.0.2 Mobile/8J2 Safari/6533.18.5" curl -A Safari customer-tutorial.$(minishift ip).nip.io
-```
-
-#### Clean up
-
-```bash
-istioctl delete routerule recommendation-mobile -n tutorial
-```
-
-## Mirroring Traffic (Dark Launch)
-
-```bash
-oc get pods -l app=recommendation -n tutorial
-```
-
-You should have 2 pods for recommendation based on the steps above
-
-```bash
-istioctl get routerules -n tutorial
-```
-
-You should have NO routerules
-if so "istioctl delete routerule rulename -n tutorial"
-
-Make sure you are in the main directory of "istio-tutorial"
-
-```bash
-istioctl create -f istiofiles/route-rule-recommendation-v1-mirror-v2.yml -n tutorial
-
-curl customer-tutorial.$(minishift ip).nip.io
-```
-
-Check the logs of recommendation-v2
-
-```bash
-oc logs -f `oc get pods|grep recommendation-v2|awk '{ print $1 }'` -c recommendation
-```
-
-
-#### Clean up
-
-```bash
-istioctl delete routerule recommendation-mirror -n tutorial
-```
-
-
-
-## Load Balancer
-
-By default, you will see "round-robin" style load-balancing, but you can change it up, with the RANDOM option being fairly visible to the naked eye.
-
-Add another v2 pod to the mix
-
-```bash
-oc scale deployment recommendation-v2 --replicas=2 -n tutorial
-```
-
-Wait a bit (oc get pods -w to watch)
-and curl the customer endpoint many times
-
-```bash
-curl customer-tutorial.$(minishift ip).nip.io
-```
-
-Add a 3rd v2 pod to the mix
-
-```bash
-oc scale deployment recommendation-v2 --replicas=3 -n tutorial
-
-oc get pods -n tutorial
-NAME                                  READY     STATUS    RESTARTS   AGE
-customer-1755156816-cjd2z             2/2       Running   0          1h
-preference-3336288630-2cc6f          2/2       Running   0          1h
-recommendation-v1-3719512284-bn42p   2/2       Running   0          59m
-recommendation-v2-2815683430-97nnf   2/2       Running   0          43m
-recommendation-v2-2815683430-d49n6   2/2       Running   0          51m
-recommendation-v2-2815683430-tptf2   2/2       Running   0          33m
-```
-
-Wait for those 2/2 (two containers in each pod) and then poll the customer endpoint
-
-```bash
-#!/bin/bash
-while true
-do curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-```
-
-The results should follow a fairly normal round-robin distribution pattern
-
-```bash
-customer => preference => recommendation v1 from '99634814-d2z2t': 1145
-customer => preference => recommendation v2 from '2819441432-525lh': 1
-customer => preference => recommendation v2 from '2819441432-rg45q': 2
-customer => preference => recommendation v2 from '2819441432-bs5ck': 181
-customer => preference => recommendation v1 from '99634814-d2z2t': 1146
-customer => preference => recommendation v2 from '2819441432-rg45q': 3
-customer => preference => recommendation v2 from '2819441432-rg45q': 4
-customer => preference => recommendation v2 from '2819441432-bs5ck': 182
-```
-
-Now, add the Random LB DestinationPolicy
-
-```bash
-istioctl create -f istiofiles/recommendation_lb_policy_app.yml -n tutorial
-```
-
-And you should see a different pattern of which pod is being selected
-
-```bash
-customer => preference => recommendation v2 from '2819441432-rg45q': 10
-customer => preference => recommendation v2 from '2819441432-525lh': 3
-customer => preference => recommendation v2 from '2819441432-rg45q': 11
-customer => preference => recommendation v1 from '99634814-d2z2t': 1153
-customer => preference => recommendation v1 from '99634814-d2z2t': 1154
-customer => preference => recommendation v1 from '99634814-d2z2t': 1155
-customer => preference => recommendation v2 from '2819441432-rg45q': 12
-customer => preference => recommendation v2 from '2819441432-525lh': 4
-customer => preference => recommendation v2 from '2819441432-525lh': 5
-customer => preference => recommendation v2 from '2819441432-rg45q': 13
-customer => preference => recommendation v2 from '2819441432-rg45q': 14
-```
-
-Clean up
-
-```bash
-istioctl delete -f istiofiles/recommendation_lb_policy_app.yml -n tutorial
-
-oc scale deployment recommendation-v2 --replicas=1 -n tutorial
-```
-
-## Rate Limiting
-
-**Note**: currently not working
-
-Here we will limit the number of concurrent requests into recommendation v2
-
-Now apply the rate limit handler
-
-```bash
-istioctl create -f istiofiles/recommendation_rate_limit_handler.yml
-```
-
-Now setup the requestcount quota
-
-```bash
-istioctl create -f istiofiles/rate_limit_rule.yml
-```
-
-Throw some requests at customer
-
-```bash
-#!/bin/bash
-while true
-do curl customer-tutorial.$(minishift ip).nip.io
-sleep .1
-done
-```
-
-You should see some 429 errors:
-
-```bash
-customer => preference => recommendation v2 from '2819441432-f4ls5': 108
-customer => preference => recommendation v1 from '99634814-d2z2t': 1932
-customer => preference => recommendation v2 from '2819441432-f4ls5': 109
-customer => preference => recommendation v1 from '99634814-d2z2t': 1933
-customer => 503 preference => 429 Too Many Requests
-customer => preference => recommendation v1 from '99634814-d2z2t': 1934
-customer => preference => recommendation v2 from '2819441432-f4ls5': 110
-customer => preference => recommendation v1 from '99634814-d2z2t': 1935
-customer => 503 preference => 429 Too Many Requests
-customer => preference => recommendation v1 from '99634814-d2z2t': 1936
-customer => preference => recommendation v2 from '2819441432-f4ls5': 111
-customer => preference => recommendation v1 from '99634814-d2z2t': 1937
-customer => 503 preference => 429 Too Many Requests
-customer => preference => recommendation v1 from '99634814-d2z2t': 1938
-customer => preference => recommendation v2 from '2819441432-f4ls5': 112
-```
-
-Clean up
-
-```bash
-istioctl delete -f istiofiles/rate_limit_rule.yml
-
-istioctl delete -f istiofiles/recommendation_rate_limit_handler.yml
-```
 
 ## Circuit Breaker
 
