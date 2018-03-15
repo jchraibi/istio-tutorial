@@ -306,8 +306,8 @@ oc adm policy add-scc-to-user anyuid -z grafana -n istio-system
 oc adm policy add-scc-to-user anyuid -z prometheus -n istio-system
 oc apply -f install/kubernetes/addons/prometheus.yaml
 oc apply -f install/kubernetes/addons/grafana.yaml
-oc expose svc grafana
-oc expose svc prometheus
+oc expose svc grafana -n istio-system
+oc expose svc prometheus -n istio-system
 ```
 
 Send a bunch of request to the customer service:
