@@ -21,7 +21,7 @@ a missing dependent service, it just returns the error message to the end-user.
   * [Monitoring](#monitoring)
   * [Distributed Tracing](#distributed-tracing)
   * [Routes rules 101](#4---route-rules-101)
-  * [Smart routing](#smart-routing)
+  * [Smart routing](#5---smart-routing)
   * [SLA and Error handling](#sla-and-error-handling)
     * [Fault injection](#fault-injection)
     * [Remediation](#remediation)
