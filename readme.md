@@ -384,7 +384,7 @@ https://github.com/jchraibi/istio-tutorial/blob/master/customer/src/main/java/co
 
 ### 4 - Route rules 101
 
-#### Istio RouteRule Changes
+### Istio RouteRule Changes
 
 #### recommendation:v2
 
@@ -478,7 +478,7 @@ and back to the main directory
 cd ..
 ```
 
-#### Changing Istio RouteRules
+### Changing Istio RouteRules
 
 #### All users to recommendation:v2
 
