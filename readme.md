@@ -1,4 +1,4 @@
-# Red hat Developers Istio tutorial
+# Red hat Developers Istio tutorial (Spring Boot and Vert.x) on Kubernetes/OpenShift
 
 There are three different and super simple microservices in this system and they are chained together in the following sequence:
 
@@ -1641,59 +1641,5 @@ Snowdrop Troubleshooting
 
 https://github.com/snowdrop/spring-boot-quickstart-istio/blob/master/TROUBLESHOOT.md
 
-
-# Java (Spring Boot and Vert.x) + Istio on Kubernetes/OpenShift
-
-
-**Table of Contents**
-
-<!-- toc -->
-
-* [Prerequisite CLI tools](#prerequisite-cli-tools)
-* [Setup minishift](#setup-minishift)
-* [Setup environment](#setup-environment)
-* [Istio installation script](#istio-installation-script)
-* [Deploy customer](#deploy-customer)
-* [Deploy preference](#deploy-preference)
-* [Deploy recommendation](#deploy-recommendation)
-* [Updating Redeploying Code](#updating-redeploying-code)
-* [Monitoring](#monitoring)
-* [Custom Metrics](#custom-metrics)
-* [Tracing](#tracing)
-* [Istio RouteRule Changes](#istio-routerule-changes)
-  * [recommendation:v2](#recommendationv2)
-* [Changing Istio RouteRules](#changing-istio-routerules)
-    * [All users to recommendation:v2](#all-users-to-recommendationv2)
-    * [All users to recommendation:v1](#all-users-to-recommendationv1)
-    * [All users to recommendation v1 and v2](#all-users-to-recommendation-v1-and-v2)
-    * [Split traffic between v1 and v2](#split-traffic-between-v1-and-v2)
-* [Fault Injection](#fault-injection)
-  * [HTTP Error 503](#http-error-503)
-  * [Delay](#delay)
-* [Retry](#retry)
-* [Timeout](#timeout)
-* [Smart routing based on user-agent header (Canary Deployment)](#smart-routing-based-on-user-agent-header-canary-deployment)
-    * [Set recommendation to all v1](#set-recommendation-to-all-v1)
-    * [Set Safari users to v2](#set-safari-users-to-v2)
-    * [Set mobile users to v2](#set-mobile-users-to-v2)
-    * [Clean up](#clean-up)
-* [Mirroring Traffic (Dark Launch)](#mirroring-traffic-dark-launch)
-    * [Clean up](#clean-up)
-* [Access Control](#access-control)
-    * [Whitelist](#whitelist)
-    * [Blacklist](#blacklist)
-* [Load Balancer](#load-balancer)
-* [Rate Limiting](#rate-limiting)
-* [Circuit Breaker](#circuit-breaker)
-  * [Fail Fast with Max Connections and Max Pending Requests](#fail-fast-with-max-connections-and-max-pending-requests)
-    * [Load test without circuit breaker](#load-test-without-circuit-breaker)
-    * [Load test with circuit breaker](#load-test-with-circuit-breaker)
-    * [Clean up](#clean-up)
-  * [Pool Ejection](#pool-ejection)
-    * [Scale number of instances of `v2` deployment](#scale-number-of-instances-of-v2-deployment)
-    * [Test behavior without failing instances](#test-behavior-without-failing-instances)
-    * [Test behavior with failing instance and without pool ejection](#test-behavior-with-failing-instance-and-without-pool-ejection)
-    * [Test behavior with failing instance and with pool ejection](#test-behavior-with-failing-instance-and-with-pool-ejection)
-  * [Ultimate resilience with retries, circuit breaker, and pool ejection](#ultimate-resilience-with-retries-circuit-breaker-and-pool-ejection)
 
 
