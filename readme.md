@@ -13,7 +13,7 @@ a missing dependent service, it just returns the error message to the end-user.
 
 * [Installation](#installation)
 * [Workshop](#workshop)
-  * [Deployment and proxy injection](#deployment-and-proxy-injection)
+  * [Deployment and proxy injection](#1---deployment-and-proxy-injection)
     * [Deploy customer](#deploy-customer)
     * [Deploy preference](#deploy-preference)
     * [Deploy recommendation](#deploy-recommendation)
